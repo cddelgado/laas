@@ -327,10 +327,18 @@ Windows PowerShell:
 laas
 ```
 
+The command is `laas`: lowercase `l-a-a-s`. It is not `lass`.
+
 or, without relying on `PATH`:
 
 ```powershell
 .\.venv\Scripts\laas.exe
+```
+
+or, through the active Python interpreter:
+
+```powershell
+python -m laas.main
 ```
 
 Show CLI options:
@@ -339,15 +347,18 @@ Show CLI options:
 laas --help
 ```
 
-Do not run `.\laas` unless you have created a `laas` file in the repository
-root. In PowerShell, `.\laas` means "run a local file named `laas`"; it does not
-look up the installed `.venv\Scripts\laas.exe` console command.
+Do not run `lass`, which is a misspelling. Do not run `.\laas` unless you have
+created a `laas` file in the repository root. In PowerShell, `.\laas` means
+"run a local file named `laas`"; it does not look up the installed
+`.venv\Scripts\laas.exe` console command.
 
 macOS/Linux:
 
 ```bash
 laas
 ```
+
+The command is `laas`: lowercase `l-a-a-s`. It is not `lass`.
 
 Direct uvicorn mode for any platform:
 
