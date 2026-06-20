@@ -26,14 +26,33 @@ otherwise install the optional video extra so OpenCV can extract frames.
 
 ## Install
 
+Detailed environment, wheel, and install-order guidance is in
+[docs/INSTALL.md](docs/INSTALL.md).
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[llama,video,dev]"
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements-dev.txt
+python -m pip install -e .
 ```
 
-If `llama-cpp-python` needs a hardware-specific build, install the correct wheel
-for your CUDA/Metal/CPU setup before running LAAS.
+Then install the `llama-cpp-python` wheel that matches your hardware. CPU-only:
+
+```powershell
+python -m pip install -r requirements-llama-cpu.txt
+```
+
+NVIDIA CUDA example:
+
+```powershell
+python -m pip install llama-cpp-python `
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+```
+
+Use the CUDA wheel index that matches your machine. The upstream
+`llama-cpp-python` project documents the current pre-built wheel indexes at
+<https://github.com/abetlen/llama-cpp-python#supported-backends>.
 
 ## Configure
 
@@ -87,6 +106,11 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/load `
   -H "Content-Type: application/json" `
   -d "{}"
 ```
+
+If you skip the explicit download step, `POST /v1/local/models/load` downloads
+the configured model when the file is missing. If `LAAS_AUTO_LOAD=true`, the
+same download-then-load path runs when the server starts. With the default
+`LAAS_AUTO_LOAD=false`, server startup does not download a model.
 
 Unload it when you are done:
 
