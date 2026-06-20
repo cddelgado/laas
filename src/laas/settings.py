@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     n_threads: int | None = None
     verbose_llama: bool = False
     idle_unload_seconds: int = 900
+    tts_model_id: str = "kokoro-82m"
+    tts_hf_repo_id: str = "fastrtc/kokoro-onnx"
+    tts_model_filename: str = "kokoro-v1.0.onnx"
+    tts_voices_filename: str = "voices-v1.0.bin"
+    tts_default_voice: str = "af_heart"
+    tts_default_lang: str = "en-us"
+    tts_auto_load: bool = False
+    tts_auto_download: bool = False
+    tts_idle_unload_seconds: int = 900
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @property
@@ -57,6 +66,14 @@ class Settings(BaseSettings):
         if not self.mmproj_filename:
             return None
         return self.model_dir / self.resolved_mmproj_repo_id.replace("/", "__") / self.mmproj_filename
+
+    @property
+    def tts_model_path(self) -> Path:
+        return self.model_dir / self.tts_hf_repo_id.replace("/", "__") / self.tts_model_filename
+
+    @property
+    def tts_voices_path(self) -> Path:
+        return self.model_dir / self.tts_hf_repo_id.replace("/", "__") / self.tts_voices_filename
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -75,6 +92,15 @@ class Settings(BaseSettings):
             "n_gpu_layers": self.n_gpu_layers,
             "n_threads": self.n_threads,
             "idle_unload_seconds": self.idle_unload_seconds,
+            "tts_model_id": self.tts_model_id,
+            "tts_hf_repo_id": self.tts_hf_repo_id,
+            "tts_model_filename": self.tts_model_filename,
+            "tts_voices_filename": self.tts_voices_filename,
+            "tts_default_voice": self.tts_default_voice,
+            "tts_default_lang": self.tts_default_lang,
+            "tts_auto_load": self.tts_auto_load,
+            "tts_auto_download": self.tts_auto_download,
+            "tts_idle_unload_seconds": self.tts_idle_unload_seconds,
         }
 
 

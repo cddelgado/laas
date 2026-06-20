@@ -31,6 +31,48 @@ class LocalModelStatus(BaseModel):
     last_used_at: float | None = None
 
 
+class LocalAudioStatus(BaseModel):
+    configured_model: str
+    loaded_model: str | None
+    is_loaded: bool
+    model_path: str
+    model_downloaded: bool
+    voices_path: str
+    voices_downloaded: bool
+    default_voice: str
+    default_lang: str
+    idle_unload_seconds: int
+    last_used_at: float | None = None
+
+
+class DownloadAudioRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+    model_filename: str | None = None
+    voices_filename: str | None = None
+
+
+class LoadAudioRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+    model_filename: str | None = None
+    voices_filename: str | None = None
+    download_if_missing: bool = True
+
+
+class SpeechRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str | None = None
+    input: str
+    voice: str | None = None
+    response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = "mp3"
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
+    lang: str | None = None
+    is_phonemes: bool = False
+    trim: bool = True
+
+
 class DownloadModelRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
@@ -176,3 +218,12 @@ class SettingsPatch(BaseModel):
     n_gpu_layers: int | None = None
     n_threads: int | None = Field(default=None, gt=0)
     idle_unload_seconds: int | None = Field(default=None, ge=0)
+    tts_model_id: str | None = None
+    tts_hf_repo_id: str | None = None
+    tts_model_filename: str | None = None
+    tts_voices_filename: str | None = None
+    tts_default_voice: str | None = None
+    tts_default_lang: str | None = None
+    tts_auto_load: bool | None = None
+    tts_auto_download: bool | None = None
+    tts_idle_unload_seconds: int | None = Field(default=None, ge=0)

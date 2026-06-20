@@ -236,7 +236,38 @@ or:
 python -m pip install -e ".[video]"
 ```
 
-## 5. Configure Model Storage
+## 5. Optional Kokoro Text-to-Speech
+
+Kokoro TTS uses the `kokoro-onnx` package and downloads its ONNX model and
+voice bundle through Hugging Face:
+
+```bash
+python -m pip install -r requirements-tts.txt
+```
+
+PowerShell:
+
+```powershell
+python -m pip install -r requirements-tts.txt
+```
+
+Equivalent `pyproject.toml` extra:
+
+```bash
+python -m pip install -e ".[tts]"
+```
+
+Default assets:
+
+```text
+LAAS_TTS_HF_REPO_ID=fastrtc/kokoro-onnx
+LAAS_TTS_MODEL_FILENAME=kokoro-v1.0.onnx
+LAAS_TTS_VOICES_FILENAME=voices-v1.0.bin
+```
+
+These files use the same `LAAS_MODEL_DIR` root as the GGUF model.
+
+## 6. Configure Model Storage
 
 Built-in defaults:
 
@@ -268,6 +299,14 @@ LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_LOAD=false
 LAAS_AUTO_DOWNLOAD=false
 LAAS_IDLE_UNLOAD_SECONDS=900
+LAAS_TTS_MODEL_ID=kokoro-82m
+LAAS_TTS_HF_REPO_ID=fastrtc/kokoro-onnx
+LAAS_TTS_MODEL_FILENAME=kokoro-v1.0.onnx
+LAAS_TTS_VOICES_FILENAME=voices-v1.0.bin
+LAAS_TTS_DEFAULT_VOICE=af_heart
+LAAS_TTS_AUTO_LOAD=false
+LAAS_TTS_AUTO_DOWNLOAD=false
+LAAS_TTS_IDLE_UNLOAD_SECONDS=900
 ```
 
 macOS/Linux `.env` example:
@@ -282,9 +321,17 @@ LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_LOAD=false
 LAAS_AUTO_DOWNLOAD=false
 LAAS_IDLE_UNLOAD_SECONDS=900
+LAAS_TTS_MODEL_ID=kokoro-82m
+LAAS_TTS_HF_REPO_ID=fastrtc/kokoro-onnx
+LAAS_TTS_MODEL_FILENAME=kokoro-v1.0.onnx
+LAAS_TTS_VOICES_FILENAME=voices-v1.0.bin
+LAAS_TTS_DEFAULT_VOICE=af_heart
+LAAS_TTS_AUTO_LOAD=false
+LAAS_TTS_AUTO_DOWNLOAD=false
+LAAS_TTS_IDLE_UNLOAD_SECONDS=900
 ```
 
-## 6. Download/Load Behavior
+## 7. Download/Load Behavior
 
 LAAS uses `huggingface-hub` to download the configured GGUF.
 

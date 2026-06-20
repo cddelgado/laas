@@ -11,6 +11,7 @@ from laas.manager import ModelManager
 from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
 from laas.settings import Settings, default_model_dir
 from laas.tools import parse_tool_calls, remove_tool_call_markup
+from laas.tts import AudioBackend, AudioManager, SynthesizedSpeech, resolve_voice
 
 
 def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
@@ -45,6 +46,47 @@ class CapturingBackend(EchoBackend):
     def completion(self, **kwargs):
         self.completion_params = kwargs.get("extra_params") or {}
         return super().completion(**kwargs)
+
+
+class FakeAudioBackend(AudioBackend):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def synthesize(self, **kwargs) -> SynthesizedSpeech:
+        self.calls.append(kwargs)
+        return SynthesizedSpeech(samples=[0.0, 0.5, -0.5], sample_rate=24000)
+
+    def voices(self) -> list[str]:
+        return ["af", "af_alloy"]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def make_audio_client(tmp_path: Path, *, write_assets: bool = True) -> tuple[TestClient, FakeAudioBackend]:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        tts_idle_unload_seconds=0,
+        tts_voices_filename="voices.json",
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    backend = FakeAudioBackend()
+    audio_manager = AudioManager(settings, backend_factory=lambda model_path, voices_path, active_settings: backend)
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    if write_assets:
+        settings.tts_model_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.tts_model_path.write_bytes(b"tts-model")
+        settings.tts_voices_path.write_text('{"af": [], "af_alloy": []}', encoding="utf-8")
+
+    client = TestClient(create_app(settings=settings, manager=text_manager, audio_manager=audio_manager))
+    return client, backend
 
 
 def test_models_and_local_status(tmp_path: Path) -> None:
@@ -256,6 +298,88 @@ def test_video_frames_translate_to_image_parts(tmp_path: Path) -> None:
     ).json()
     assert response["status"] == "completed"
     assert "summarize video" in response["output_text"]
+
+
+def test_audio_status_voices_speech_and_unload(tmp_path: Path) -> None:
+    client, backend = make_audio_client(tmp_path)
+
+    status = client.get("/v1/local/audio/status").json()
+    assert status["configured_model"] == "kokoro-82m"
+    assert status["model_downloaded"] is True
+    assert status["voices_downloaded"] is True
+
+    voices = client.get("/v1/local/audio/voices").json()
+    assert [voice["id"] for voice in voices["data"]] == ["af", "af_alloy"]
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "model": "tts-1",
+            "input": "hello from kokoro",
+            "voice": "alloy",
+            "response_format": "pcm",
+            "speed": 1.25,
+            "lang": "en-us",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/pcm"
+    assert response.headers["x-laas-audio-sample-rate"] == "24000"
+    assert response.content == b"\x00\x00\xff?\x01\xc0"
+    assert backend.calls[0]["text"] == "hello from kokoro"
+    assert backend.calls[0]["voice"] == "af_alloy"
+    assert backend.calls[0]["speed"] == 1.25
+
+    unloaded = client.post("/v1/local/audio/unload", json={}).json()
+    assert unloaded["is_loaded"] is False
+    assert backend.closed is True
+
+
+def test_audio_missing_assets_require_download(tmp_path: Path) -> None:
+    client, _backend = make_audio_client(tmp_path, write_assets=False)
+
+    response = client.post("/v1/local/audio/load", json={"download_if_missing": False})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["code"] == "audio_not_downloaded"
+
+
+def test_audio_download_endpoint_fetches_model_and_voices(tmp_path: Path, monkeypatch) -> None:
+    client, _backend = make_audio_client(tmp_path, write_assets=False)
+
+    def fake_download(*, repo_id, filename, local_dir):
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"downloaded")
+        return path
+
+    monkeypatch.setattr("laas.tts.hf_hub_download", fake_download)
+    response = client.post("/v1/local/audio/download", json={})
+
+    assert response.status_code == 200
+    assert response.json()["downloaded"] is True
+    assert len(response.json()["paths"]) == 2
+
+
+def test_audio_rejects_unknown_model_and_unsupported_format(tmp_path: Path) -> None:
+    client, _backend = make_audio_client(tmp_path)
+
+    unknown_model = client.post(
+        "/v1/audio/speech",
+        json={"model": "not-kokoro", "input": "hello", "response_format": "pcm"},
+    )
+    assert unknown_model.status_code == 404
+
+    unsupported = client.post(
+        "/v1/audio/speech",
+        json={"model": "kokoro", "input": "hello", "response_format": "opus"},
+    )
+    assert unsupported.status_code == 400
+
+
+def test_openai_voice_aliases_map_to_kokoro_ids() -> None:
+    assert resolve_voice("alloy") == "af_alloy"
+    assert resolve_voice("af_heart") == "af_heart"
 
 
 def test_patch_model_directory_setting(tmp_path: Path) -> None:

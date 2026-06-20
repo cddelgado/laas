@@ -11,12 +11,18 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/chat/completions`
 - `POST /v1/completions`
 - `POST /v1/responses`
+- `POST /v1/audio/speech`
 - `GET /v1/local/settings`
 - `PATCH /v1/local/settings`
 - `GET /v1/local/models/status`
 - `POST /v1/local/models/download`
 - `POST /v1/local/models/load`
 - `POST /v1/local/models/unload`
+- `GET /v1/local/audio/status`
+- `GET /v1/local/audio/voices`
+- `POST /v1/local/audio/download`
+- `POST /v1/local/audio/load`
+- `POST /v1/local/audio/unload`
 - `GET /v1/local/capabilities`
 
 The OpenAI-compatible endpoints accept OpenAI-style text, tool calls, image
@@ -74,6 +80,20 @@ Use the wheel index that matches your machine. The upstream `llama-cpp-python`
 project documents the current pre-built wheel indexes at
 <https://github.com/abetlen/llama-cpp-python#supported-backends>.
 
+For Kokoro text-to-speech:
+
+```bash
+python -m pip install -r requirements-tts.txt
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m pip install -r requirements-tts.txt
+```
+
+The equivalent `pyproject.toml` extra is `python -m pip install -e ".[tts]"`.
+
 ## Configure
 
 By default, LAAS downloads models to:
@@ -113,6 +133,18 @@ LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
 LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
 LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_DOWNLOAD=false
+```
+
+The default Kokoro TTS settings are:
+
+```text
+LAAS_TTS_MODEL_ID=kokoro-82m
+LAAS_TTS_HF_REPO_ID=fastrtc/kokoro-onnx
+LAAS_TTS_MODEL_FILENAME=kokoro-v1.0.onnx
+LAAS_TTS_VOICES_FILENAME=voices-v1.0.bin
+LAAS_TTS_DEFAULT_VOICE=af_heart
+LAAS_TTS_DEFAULT_LANG=en-us
+LAAS_TTS_AUTO_DOWNLOAD=false
 ```
 
 ## Run
@@ -244,6 +276,68 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/unload
 
 LAAS also unloads the active model after `LAAS_IDLE_UNLOAD_SECONDS` seconds of
 inactivity. Set it to `0` to disable idle unloading.
+
+## Kokoro Text-to-Speech
+
+Install the TTS extra, start `laas`, then download and load Kokoro:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/audio/download `
+  -ContentType "application/json" `
+  -Body "{}"
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/audio/load `
+  -ContentType "application/json" `
+  -Body "{}"
+```
+
+Generate WAV output:
+
+```powershell
+$body = @{
+  model = "tts-1"
+  input = "Hello from local Kokoro."
+  voice = "af_heart"
+  response_format = "wav"
+  speed = 1.0
+} | ConvertTo-Json
+
+Invoke-WebRequest -Method Post -Uri http://127.0.0.1:8000/v1/audio/speech `
+  -ContentType "application/json" `
+  -Body $body `
+  -OutFile .\kokoro.wav
+```
+
+macOS/Linux:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/local/audio/download \
+  -H "Content-Type: application/json" \
+  -d "{}"
+
+curl -X POST http://127.0.0.1:8000/v1/local/audio/load \
+  -H "Content-Type: application/json" \
+  -d "{}"
+
+curl -X POST http://127.0.0.1:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"tts-1","input":"Hello from local Kokoro.","voice":"af_heart","response_format":"wav"}' \
+  --output kokoro.wav
+```
+
+`/v1/audio/speech` accepts OpenAI voice aliases where practical, for example
+`alloy` maps to Kokoro's `af_alloy`. Direct Kokoro voice ids are also accepted.
+Supported output formats are `mp3`, `wav`, `flac`, and raw signed 16-bit little
+endian `pcm`; `opus` and `aac` currently return a validation error.
+
+Unload Kokoro when you are done:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/audio/unload
+```
+
+Kokoro also unloads after `LAAS_TTS_IDLE_UNLOAD_SECONDS` seconds of inactivity.
+Set it to `0` to disable TTS idle unloading.
 
 ## Use With OpenAI Clients
 

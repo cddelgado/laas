@@ -3,18 +3,24 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 
 from .errors import openai_error
 from .manager import ModelManager, ModelNotDownloadedError
 from .openai_compat import build_openai_router
-from .schemas import DownloadModelRequest, LoadModelRequest, SettingsPatch
+from .schemas import DownloadAudioRequest, DownloadModelRequest, LoadAudioRequest, LoadModelRequest, SettingsPatch, SpeechRequest
 from .settings import Settings, load_settings, save_settings
+from .tts import AudioManager, AudioNotDownloadedError, encode_audio
 
 
-def create_app(settings: Settings | None = None, manager: ModelManager | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    manager: ModelManager | None = None,
+    audio_manager: AudioManager | None = None,
+) -> FastAPI:
     active_settings = settings or load_settings()
     active_manager = manager or ModelManager(active_settings)
+    active_audio_manager = audio_manager or AudioManager(active_settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -22,6 +28,11 @@ def create_app(settings: Settings | None = None, manager: ModelManager | None = 
             try:
                 active_manager.load(download_if_missing=active_settings.auto_download)
             except ModelNotDownloadedError:
+                pass
+        if active_settings.tts_auto_load:
+            try:
+                active_audio_manager.load(download_if_missing=active_settings.tts_auto_download)
+            except AudioNotDownloadedError:
                 pass
         yield
 
@@ -33,10 +44,15 @@ def create_app(settings: Settings | None = None, manager: ModelManager | None = 
     )
     app.state.settings = active_settings
     app.state.manager = active_manager
+    app.state.audio_manager = active_audio_manager
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"status": "ok", "model_loaded": active_manager.is_loaded}
+        return {
+            "status": "ok",
+            "model_loaded": active_manager.is_loaded,
+            "audio_model_loaded": active_audio_manager.is_loaded,
+        }
 
     @app.get("/v1/local/settings")
     def get_settings() -> dict[str, Any]:
@@ -102,6 +118,105 @@ def create_app(settings: Settings | None = None, manager: ModelManager | None = 
     @app.post("/v1/local/models/unload")
     def unload_model() -> dict[str, Any]:
         return active_manager.unload().model_dump()
+
+    @app.get("/v1/local/audio/status")
+    def audio_status() -> dict[str, Any]:
+        return active_audio_manager.status().model_dump()
+
+    @app.get("/v1/local/audio/voices")
+    def audio_voices() -> dict[str, Any]:
+        return {
+            "object": "list",
+            "data": [{"id": voice, "object": "voice"} for voice in active_audio_manager.voices()],
+        }
+
+    @app.post("/v1/local/audio/download")
+    def download_audio(request: DownloadAudioRequest) -> dict[str, Any]:
+        if request.hf_repo_id:
+            active_settings.tts_hf_repo_id = request.hf_repo_id
+        if request.model_filename:
+            active_settings.tts_model_filename = request.model_filename
+        if request.voices_filename:
+            active_settings.tts_voices_filename = request.voices_filename
+        paths = active_audio_manager.download_configured_assets()
+        return {
+            "model_id": request.model_id or active_settings.tts_model_id,
+            "paths": [str(path) for path in paths],
+            "downloaded": True,
+        }
+
+    @app.post("/v1/local/audio/load")
+    def load_audio(request: LoadAudioRequest) -> dict[str, Any]:
+        try:
+            return active_audio_manager.load(
+                model_id=request.model_id,
+                hf_repo_id=request.hf_repo_id,
+                model_filename=request.model_filename,
+                voices_filename=request.voices_filename,
+                download_if_missing=request.download_if_missing,
+            ).model_dump()
+        except AudioNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                f"The configured {exc.asset} is not downloaded. Call POST /v1/local/audio/download first, "
+                "or retry POST /v1/local/audio/load with download_if_missing=true.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="audio_not_downloaded",
+            ) from exc
+        except (RuntimeError, ValueError) as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="audio_backend_missing") from exc
+
+    @app.post("/v1/local/audio/unload")
+    def unload_audio() -> dict[str, Any]:
+        return active_audio_manager.unload().model_dump()
+
+    @app.post("/v1/audio/speech")
+    def create_speech(request: SpeechRequest) -> Response:
+        if request.model and request.model not in {active_settings.tts_model_id, "tts-1", "tts-1-hd", "kokoro"}:
+            raise openai_error(
+                404,
+                f"The audio model '{request.model}' is not available. Configured audio model is '{active_settings.tts_model_id}'.",
+                param="model",
+                code="model_not_found",
+            )
+        try:
+            speech = active_audio_manager.synthesize(
+                text=request.input,
+                voice=request.voice,
+                speed=request.speed,
+                lang=request.lang,
+                is_phonemes=request.is_phonemes,
+                trim=request.trim,
+            )
+        except AudioNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                f"The configured {exc.asset} is not downloaded. Call POST /v1/local/audio/download first.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="audio_not_downloaded",
+            ) from exc
+        except AssertionError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="voice") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="audio_backend_missing") from exc
+
+        try:
+            content, media_type = encode_audio(speech.samples, speech.sample_rate, request.response_format)
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="response_format") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="audio_backend_missing") from exc
+
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "X-LAAS-Audio-Model": active_settings.tts_model_id,
+                "X-LAAS-Audio-Sample-Rate": str(speech.sample_rate),
+            },
+        )
 
     app.include_router(build_openai_router(active_manager))
     return app
