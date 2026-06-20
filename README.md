@@ -114,11 +114,35 @@ LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
 
 ## Run
 
+Windows PowerShell:
+
 ```powershell
 laas
 ```
 
-or:
+or, without relying on `PATH`:
+
+```powershell
+.\.venv\Scripts\laas.exe
+```
+
+Show CLI options:
+
+```powershell
+laas --help
+```
+
+Do not run `.\laas` unless you have created a `laas` file in the repository
+root. In PowerShell, `.\laas` means "run a local file named `laas`"; it does not
+look up the installed `.venv\Scripts\laas.exe` console command.
+
+macOS/Linux:
+
+```bash
+laas
+```
+
+Direct uvicorn alternative for any platform:
 
 ```powershell
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from laas.app import create_app
 from laas.backends import EchoBackend
+from laas.main import build_parser
 from laas.manager import ModelManager
 from laas.settings import Settings, default_model_dir
 
@@ -140,3 +141,10 @@ def test_default_model_dir_is_platform_specific(monkeypatch) -> None:
 
     monkeypatch.setattr("sys.platform", "linux")
     assert default_model_dir() == Path.home() / "AI" / "Models"
+
+
+def test_cli_parser_accepts_host_port_and_reload() -> None:
+    args = build_parser().parse_args(["--host", "0.0.0.0", "--port", "9000", "--reload"])
+    assert args.host == "0.0.0.0"
+    assert args.port == 9000
+    assert args.reload is True

@@ -321,13 +321,35 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/load \
 
 ## 7. Run
 
-Normal mode:
+Windows PowerShell:
+
+```powershell
+laas
+```
+
+or, without relying on `PATH`:
+
+```powershell
+.\.venv\Scripts\laas.exe
+```
+
+Show CLI options:
+
+```powershell
+laas --help
+```
+
+Do not run `.\laas` unless you have created a `laas` file in the repository
+root. In PowerShell, `.\laas` means "run a local file named `laas`"; it does not
+look up the installed `.venv\Scripts\laas.exe` console command.
+
+macOS/Linux:
 
 ```bash
 laas
 ```
 
-Direct uvicorn mode:
+Direct uvicorn mode for any platform:
 
 ```bash
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000
