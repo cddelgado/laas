@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, Response, UploadFile
+from fastapi import FastAPI, File, Form, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 
 from .errors import openai_error
@@ -376,81 +376,62 @@ def create_app(
         app.state.voice_sessions.pop(session_id, None)
         return _public_voice_session(session)
 
-    @app.post("/v1/local/voice/sessions/{session_id}/turns")
-    async def create_voice_turn(
-        session_id: str,
-        file: UploadFile = File(...),
-        response_format: str | None = Form(None),
-        voice: str | None = Form(None),
-        language: str | None = Form(None),
-        prompt: str | None = Form(None),
-        temperature: float | None = Form(None),
-        speed: float | None = Form(None),
+    def _run_voice_turn(
+        session: dict[str, Any],
+        media_path: Path,
+        *,
+        response_format: str | None = None,
+        voice: str | None = None,
+        language: str | None = None,
+        prompt: str | None = None,
+        temperature: float | None = None,
+        speed: float | None = None,
     ) -> dict[str, Any]:
-        session = _get_voice_session(session_id, app.state.voice_sessions)
-        media_path = await _upload_to_temp_file(file)
-        try:
-            transcript = active_transcription_manager.transcribe(
-                media_path=media_path,
-                language=language if language is not None else session.get("language"),
-                prompt=prompt if prompt is not None else session.get("prompt"),
-                temperature=temperature if temperature is not None else session.get("temperature"),
-                translate=False,
-            )
-            user_message = {"role": "user", "content": transcript.text}
-            messages = [*session["messages"], user_message]
-            chat_result = active_manager.backend.chat_completion(
-                messages=messages,
-                model=active_settings.model_id,
-                tools=None,
-                tool_choice="none",
-                temperature=1.0,
-                top_p=1.0,
-                max_tokens=None,
-                stream=False,
-                extra_params={},
-            )
-            chat_response = _normalize_chat_response(chat_result, active_settings.model_id, None)
-            assistant_text = chat_response["choices"][0]["message"].get("content") or ""
-            assistant_message = {"role": "assistant", "content": assistant_text}
-            speech = active_audio_manager.synthesize(
-                text=assistant_text,
-                voice=voice if voice is not None else session.get("voice"),
-                speed=speed if speed is not None else session.get("speed"),
-                lang=session.get("lang"),
-                is_phonemes=False,
-                trim=True,
-            )
-            requested_format = response_format or session.get("response_format") or "pcm"
-            audio_content, media_type = encode_audio(
-                speech.samples,
-                speech.sample_rate,
-                requested_format,
-                ffmpeg_path=active_settings.tts_ffmpeg_path,
-            )
-        except TranscriptionNotDownloadedError as exc:
-            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="transcription_not_downloaded") from exc
-        except AudioNotDownloadedError as exc:
-            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="audio_not_downloaded") from exc
-        except ModelNotDownloadedError as exc:
-            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="model_not_downloaded") from exc
-        except ValueError as exc:
-            raise openai_error(400, str(exc), type_="invalid_request_error") from exc
-        except AudioEncoderMissingError as exc:
-            raise openai_error(503, str(exc), type_="server_error", param="response_format", code="audio_encoder_missing") from exc
-        except AudioEncodingError as exc:
-            raise openai_error(500, str(exc), type_="server_error", param="response_format", code="audio_encoding_failed") from exc
-        except RuntimeError as exc:
-            raise openai_error(503, str(exc), type_="server_error", code="voice_backend_missing") from exc
-        finally:
-            media_path.unlink(missing_ok=True)
+        transcript = active_transcription_manager.transcribe(
+            media_path=media_path,
+            language=language if language is not None else session.get("language"),
+            prompt=prompt if prompt is not None else session.get("prompt"),
+            temperature=temperature if temperature is not None else session.get("temperature"),
+            translate=False,
+        )
+        user_message = {"role": "user", "content": transcript.text}
+        messages = [*session["messages"], user_message]
+        chat_result = active_manager.backend.chat_completion(
+            messages=messages,
+            model=active_settings.model_id,
+            tools=None,
+            tool_choice="none",
+            temperature=1.0,
+            top_p=1.0,
+            max_tokens=None,
+            stream=False,
+            extra_params={},
+        )
+        chat_response = _normalize_chat_response(chat_result, active_settings.model_id, None)
+        assistant_text = chat_response["choices"][0]["message"].get("content") or ""
+        assistant_message = {"role": "assistant", "content": assistant_text}
+        speech = active_audio_manager.synthesize(
+            text=assistant_text,
+            voice=voice if voice is not None else session.get("voice"),
+            speed=speed if speed is not None else session.get("speed"),
+            lang=session.get("lang"),
+            is_phonemes=False,
+            trim=True,
+        )
+        requested_format = response_format or session.get("response_format") or "pcm"
+        audio_content, media_type = encode_audio(
+            speech.samples,
+            speech.sample_rate,
+            requested_format,
+            ffmpeg_path=active_settings.tts_ffmpeg_path,
+        )
 
         session["messages"] = [*session["messages"], user_message, assistant_message]
         session["updated_at"] = int(time.time())
         turn = {
             "id": f"vturn_{uuid.uuid4().hex}",
             "object": "local.voice.turn",
-            "session_id": session_id,
+            "session_id": session["id"],
             "created_at": session["updated_at"],
             "transcript": {
                 "text": transcript.text,
@@ -476,6 +457,146 @@ def create_app(
         }
         session["turns"].append(turn)
         return turn
+
+    @app.post("/v1/local/voice/sessions/{session_id}/turns")
+    async def create_voice_turn(
+        session_id: str,
+        file: UploadFile = File(...),
+        response_format: str | None = Form(None),
+        voice: str | None = Form(None),
+        language: str | None = Form(None),
+        prompt: str | None = Form(None),
+        temperature: float | None = Form(None),
+        speed: float | None = Form(None),
+    ) -> dict[str, Any]:
+        session = _get_voice_session(session_id, app.state.voice_sessions)
+        media_path = await _upload_to_temp_file(file)
+        try:
+            return _run_voice_turn(
+                session,
+                media_path,
+                response_format=response_format,
+                voice=voice,
+                language=language,
+                prompt=prompt,
+                temperature=temperature,
+                speed=speed,
+            )
+        except TranscriptionNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="transcription_not_downloaded") from exc
+        except AudioNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="audio_not_downloaded") from exc
+        except ModelNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="model_not_downloaded") from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error") from exc
+        except AudioEncoderMissingError as exc:
+            raise openai_error(503, str(exc), type_="server_error", param="response_format", code="audio_encoder_missing") from exc
+        except AudioEncodingError as exc:
+            raise openai_error(500, str(exc), type_="server_error", param="response_format", code="audio_encoding_failed") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="voice_backend_missing") from exc
+        finally:
+            media_path.unlink(missing_ok=True)
+
+    @app.websocket("/v1/local/voice/sessions/{session_id}/realtime")
+    async def realtime_voice_session(session_id: str, websocket: WebSocket) -> None:
+        await websocket.accept()
+        session = app.state.voice_sessions.get(session_id)
+        if not session:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "error": {"message": f"The voice session '{session_id}' does not exist", "code": "not_found"},
+                }
+            )
+            await websocket.close(code=1008)
+            return
+
+        audio_buffer = bytearray()
+        await websocket.send_json({"type": "session.created", "session": _public_voice_session(session)})
+        try:
+            while True:
+                event = await websocket.receive_json()
+                event_type = event.get("type")
+                if event_type in {"session.close", "close"}:
+                    session["status"] = "ended"
+                    session["updated_at"] = int(time.time())
+                    app.state.voice_sessions.pop(session_id, None)
+                    await websocket.send_json({"type": "session.closed", "session": _public_voice_session(session)})
+                    await websocket.close()
+                    return
+                if event_type == "response.cancel":
+                    await websocket.send_json({"type": "response.cancelled", "session_id": session_id})
+                    continue
+                if event_type == "input_audio_buffer.clear":
+                    audio_buffer.clear()
+                    await websocket.send_json({"type": "input_audio_buffer.cleared", "session_id": session_id})
+                    continue
+                if event_type == "input_audio_buffer.append":
+                    try:
+                        audio_buffer.extend(base64.b64decode(event.get("audio", ""), validate=True))
+                    except Exception:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": "audio must be base64 encoded", "code": "invalid_audio"}}
+                        )
+                        continue
+                    await websocket.send_json(
+                        {
+                            "type": "input_audio_buffer.appended",
+                            "session_id": session_id,
+                            "buffer_bytes": len(audio_buffer),
+                        }
+                    )
+                    continue
+                if event_type in {"input_audio_buffer.commit", "voice.turn"}:
+                    if event_type == "voice.turn":
+                        try:
+                            audio_bytes = base64.b64decode(event.get("audio", ""), validate=True)
+                        except Exception:
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "error": {"message": "audio must be base64 encoded", "code": "invalid_audio"},
+                                }
+                            )
+                            continue
+                    else:
+                        audio_bytes = bytes(audio_buffer)
+                        audio_buffer.clear()
+                    if not audio_bytes:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": "audio buffer is empty", "code": "empty_audio"}}
+                        )
+                        continue
+                    media_path = _bytes_to_temp_file(audio_bytes, filename=event.get("filename"))
+                    turn_payload: dict[str, Any] | None = None
+                    try:
+                        turn_payload = _run_voice_turn(
+                            session,
+                            media_path,
+                            response_format=event.get("response_format"),
+                            voice=event.get("voice"),
+                            language=event.get("language"),
+                            prompt=event.get("prompt"),
+                            temperature=event.get("temperature"),
+                            speed=event.get("speed"),
+                        )
+                    except Exception as exc:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": str(exc), "code": "voice_turn_failed"}}
+                        )
+                    finally:
+                        media_path.unlink(missing_ok=True)
+                    if turn_payload is not None:
+                        await websocket.send_json({"type": "response.completed", "session_id": session_id, "turn": turn_payload})
+                    continue
+
+                await websocket.send_json(
+                    {"type": "error", "error": {"message": f"unsupported event type: {event_type}", "code": "unsupported_event"}}
+                )
+        except WebSocketDisconnect:
+            return
 
     @app.post("/v1/audio/speech")
     def create_speech(request: SpeechRequest) -> Response:
@@ -644,6 +765,20 @@ async def _upload_to_temp_file(file: UploadFile) -> Path:
     if not content:
         raise openai_error(400, "uploaded audio file is empty", param="file")
     suffix = Path(file.filename or "").suffix or ".audio"
+    fd, raw_path = tempfile.mkstemp(suffix=suffix)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+    except Exception:
+        os.close(fd)
+        raise
+    return Path(raw_path)
+
+
+def _bytes_to_temp_file(content: bytes, *, filename: str | None = None) -> Path:
+    if not content:
+        raise ValueError("audio buffer is empty")
+    suffix = Path(filename or "").suffix or ".audio"
     fd, raw_path = tempfile.mkstemp(suffix=suffix)
     try:
         with os.fdopen(fd, "wb") as fh:

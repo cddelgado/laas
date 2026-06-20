@@ -738,6 +738,46 @@ def test_voice_session_turn_transcribes_generates_and_synthesizes(tmp_path: Path
     assert client.get(f"/v1/local/voice/sessions/{session['id']}").status_code == 404
 
 
+def test_voice_session_realtime_websocket_buffer_commit(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+    session = client.post(
+        "/v1/local/voice/sessions",
+        json={"voice": "alloy", "response_format": "pcm"},
+    ).json()
+
+    with client.websocket_connect(f"/v1/local/voice/sessions/{session['id']}/realtime") as websocket:
+        created = websocket.receive_json()
+        assert created["type"] == "session.created"
+
+        websocket.send_json(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(b"fake audio bytes").decode("ascii"),
+            }
+        )
+        appended = websocket.receive_json()
+        assert appended["type"] == "input_audio_buffer.appended"
+        assert appended["buffer_bytes"] == len(b"fake audio bytes")
+
+        websocket.send_json({"type": "input_audio_buffer.commit", "filename": "sample.wav"})
+        completed = websocket.receive_json()
+        assert completed["type"] == "response.completed"
+        assert completed["turn"]["transcript"]["text"] == "hello from whisper"
+        assert completed["turn"]["response"]["text"] == "hello from whisper"
+        assert base64.b64decode(completed["turn"]["audio"]["data"]) == b"\x00\x00\xff?\x01\xc0"
+
+        websocket.send_json({"type": "response.cancel"})
+        assert websocket.receive_json()["type"] == "response.cancelled"
+
+        websocket.send_json({"type": "session.close"})
+        closed = websocket.receive_json()
+        assert closed["type"] == "session.closed"
+
+    assert audio_backend.calls[0]["voice"] == "af_alloy"
+    assert transcription_backend.calls[0]["translate"] is False
+    assert client.get(f"/v1/local/voice/sessions/{session['id']}").status_code == 404
+
+
 def test_patch_model_directory_setting(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     target = tmp_path / "models"

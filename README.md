@@ -35,6 +35,7 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `GET /v1/local/voice/sessions/{session_id}`
 - `DELETE /v1/local/voice/sessions/{session_id}`
 - `POST /v1/local/voice/sessions/{session_id}/turns`
+- `WS /v1/local/voice/sessions/{session_id}/realtime`
 - `GET /v1/local/capabilities`
 
 The OpenAI-compatible endpoints accept OpenAI-style text, tool calls, image
@@ -434,6 +435,25 @@ Path("answer.wav").write_bytes(base64.b64decode(payload["audio"]["data"]))
 
 requests.delete(f"{base_url}/v1/local/voice/sessions/{session_id}").raise_for_status()
 ```
+
+The realtime WebSocket transport is available at
+`/v1/local/voice/sessions/{session_id}/realtime`. After connecting, clients can
+send one of two audio shapes:
+
+```json
+{"type":"input_audio_buffer.append","audio":"<base64 audio bytes>"}
+{"type":"input_audio_buffer.commit","filename":"question.wav"}
+```
+
+or a one-shot turn:
+
+```json
+{"type":"voice.turn","audio":"<base64 audio bytes>","filename":"question.wav"}
+```
+
+The server replies with `response.completed` containing the same turn payload as
+the HTTP endpoint. It also accepts `input_audio_buffer.clear`,
+`response.cancel`, and `session.close` control events.
 
 Unload the full voice stack when you are done:
 
