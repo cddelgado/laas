@@ -11,7 +11,7 @@ from laas.manager import ModelManager
 from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
 from laas.settings import Settings, default_model_dir
 from laas.tools import parse_tool_calls, remove_tool_call_markup
-from laas.tts import AudioBackend, AudioManager, SynthesizedSpeech, resolve_voice
+from laas.tts import AudioBackend, AudioEncoderMissingError, AudioManager, SynthesizedSpeech, encode_audio, resolve_voice
 
 
 def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
@@ -64,13 +64,19 @@ class FakeAudioBackend(AudioBackend):
         self.closed = True
 
 
-def make_audio_client(tmp_path: Path, *, write_assets: bool = True) -> tuple[TestClient, FakeAudioBackend]:
+def make_audio_client(
+    tmp_path: Path,
+    *,
+    write_assets: bool = True,
+    ffmpeg_path: str = "ffmpeg",
+) -> tuple[TestClient, FakeAudioBackend]:
     settings = Settings(
         model_dir=tmp_path,
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         tts_idle_unload_seconds=0,
         tts_voices_filename="voices.json",
+        tts_ffmpeg_path=ffmpeg_path,
     )
     text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
     backend = FakeAudioBackend()
@@ -307,6 +313,8 @@ def test_audio_status_voices_speech_and_unload(tmp_path: Path) -> None:
     assert status["configured_model"] == "kokoro-82m"
     assert status["model_downloaded"] is True
     assert status["voices_downloaded"] is True
+    assert "pcm" in status["supported_formats"]
+    assert "wav" in status["supported_formats"]
 
     voices = client.get("/v1/local/audio/voices").json()
     assert [voice["id"] for voice in voices["data"]] == ["af", "af_alloy"]
@@ -361,8 +369,8 @@ def test_audio_download_endpoint_fetches_model_and_voices(tmp_path: Path, monkey
     assert len(response.json()["paths"]) == 2
 
 
-def test_audio_rejects_unknown_model_and_unsupported_format(tmp_path: Path) -> None:
-    client, _backend = make_audio_client(tmp_path)
+def test_audio_rejects_unknown_model_and_reports_missing_encoder(tmp_path: Path) -> None:
+    client, _backend = make_audio_client(tmp_path, ffmpeg_path="definitely-missing-ffmpeg")
 
     unknown_model = client.post(
         "/v1/audio/speech",
@@ -370,11 +378,22 @@ def test_audio_rejects_unknown_model_and_unsupported_format(tmp_path: Path) -> N
     )
     assert unknown_model.status_code == 404
 
-    unsupported = client.post(
+    missing_encoder = client.post(
         "/v1/audio/speech",
         json={"model": "kokoro", "input": "hello", "response_format": "opus"},
     )
-    assert unsupported.status_code == 400
+    assert missing_encoder.status_code == 503
+    assert missing_encoder.json()["detail"]["error"]["code"] == "audio_encoder_missing"
+
+
+def test_audio_encode_reports_missing_ffmpeg() -> None:
+    try:
+        encode_audio([0.0, 0.1], 24000, "aac", ffmpeg_path="definitely-missing-ffmpeg")
+    except AudioEncoderMissingError as exc:
+        assert exc.response_format == "aac"
+        assert exc.encoder == "ffmpeg"
+    else:
+        raise AssertionError("Expected AudioEncoderMissingError")
 
 
 def test_openai_voice_aliases_map_to_kokoro_ids() -> None:

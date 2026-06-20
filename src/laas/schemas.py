@@ -41,6 +41,9 @@ class LocalAudioStatus(BaseModel):
     voices_downloaded: bool
     default_voice: str
     default_lang: str
+    supported_formats: list[str]
+    ffmpeg_path: str | None = None
+    ffmpeg_available: bool = False
     idle_unload_seconds: int
     last_used_at: float | None = None
 
@@ -227,3 +230,4 @@ class SettingsPatch(BaseModel):
     tts_auto_load: bool | None = None
     tts_auto_download: bool | None = None
     tts_idle_unload_seconds: int | None = Field(default=None, ge=0)
+    tts_ffmpeg_path: str | None = None

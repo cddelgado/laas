@@ -145,6 +145,7 @@ LAAS_TTS_VOICES_FILENAME=voices-v1.0.bin
 LAAS_TTS_DEFAULT_VOICE=af_heart
 LAAS_TTS_DEFAULT_LANG=en-us
 LAAS_TTS_AUTO_DOWNLOAD=false
+LAAS_TTS_FFMPEG_PATH=ffmpeg
 ```
 
 ## Run
@@ -327,8 +328,26 @@ curl -X POST http://127.0.0.1:8000/v1/audio/speech \
 
 `/v1/audio/speech` accepts OpenAI voice aliases where practical, for example
 `alloy` maps to Kokoro's `af_alloy`. Direct Kokoro voice ids are also accepted.
-Supported output formats are `mp3`, `wav`, `flac`, and raw signed 16-bit little
-endian `pcm`; `opus` and `aac` currently return a validation error.
+The `mp3`, `wav`, `flac`, and raw signed 16-bit little endian `pcm` formats are
+encoded in-process. `opus` and `aac` are encoded with FFmpeg when it is
+available.
+
+Install FFmpeg to enable OpenAI-compatible `opus` and `aac` output:
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+macOS/Linux:
+
+```bash
+brew install ffmpeg
+# or: sudo apt install ffmpeg
+```
+
+If `ffmpeg` is not on `PATH`, set `LAAS_TTS_FFMPEG_PATH` to the executable. The
+audio status endpoint reports `supported_formats`, `ffmpeg_path`, and
+`ffmpeg_available` so clients can decide which formats to request.
 
 Unload Kokoro when you are done:
 

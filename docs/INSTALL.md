@@ -267,6 +267,33 @@ LAAS_TTS_VOICES_FILENAME=voices-v1.0.bin
 
 These files use the same `LAAS_MODEL_DIR` root as the GGUF model.
 
+FFmpeg is optional but required for OpenAI-compatible `aac` and `opus` speech
+outputs. Without FFmpeg, LAAS still supports `mp3`, `wav`, `flac`, and `pcm`.
+
+Windows:
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+macOS:
+
+```bash
+brew install ffmpeg
+```
+
+Ubuntu/Debian:
+
+```bash
+sudo apt install ffmpeg
+```
+
+If the executable is not on `PATH`, set:
+
+```text
+LAAS_TTS_FFMPEG_PATH=C:\path\to\ffmpeg.exe
+```
+
 ## 6. Configure Model Storage
 
 Built-in defaults:
@@ -307,6 +334,7 @@ LAAS_TTS_DEFAULT_VOICE=af_heart
 LAAS_TTS_AUTO_LOAD=false
 LAAS_TTS_AUTO_DOWNLOAD=false
 LAAS_TTS_IDLE_UNLOAD_SECONDS=900
+LAAS_TTS_FFMPEG_PATH=ffmpeg
 ```
 
 macOS/Linux `.env` example:
@@ -329,6 +357,7 @@ LAAS_TTS_DEFAULT_VOICE=af_heart
 LAAS_TTS_AUTO_LOAD=false
 LAAS_TTS_AUTO_DOWNLOAD=false
 LAAS_TTS_IDLE_UNLOAD_SECONDS=900
+LAAS_TTS_FFMPEG_PATH=ffmpeg
 ```
 
 ## 7. Download/Load Behavior

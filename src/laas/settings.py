@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     tts_auto_load: bool = False
     tts_auto_download: bool = False
     tts_idle_unload_seconds: int = 900
+    tts_ffmpeg_path: str = "ffmpeg"
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @property
@@ -101,6 +102,7 @@ class Settings(BaseSettings):
             "tts_auto_load": self.tts_auto_load,
             "tts_auto_download": self.tts_auto_download,
             "tts_idle_unload_seconds": self.tts_idle_unload_seconds,
+            "tts_ffmpeg_path": self.tts_ffmpeg_path,
         }
 
 

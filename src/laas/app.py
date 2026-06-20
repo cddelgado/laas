@@ -10,7 +10,7 @@ from .manager import ModelManager, ModelNotDownloadedError
 from .openai_compat import build_openai_router
 from .schemas import DownloadAudioRequest, DownloadModelRequest, LoadAudioRequest, LoadModelRequest, SettingsPatch, SpeechRequest
 from .settings import Settings, load_settings, save_settings
-from .tts import AudioManager, AudioNotDownloadedError, encode_audio
+from .tts import AudioEncoderMissingError, AudioEncodingError, AudioManager, AudioNotDownloadedError, encode_audio
 
 
 def create_app(
@@ -203,9 +203,30 @@ def create_app(
             raise openai_error(503, str(exc), type_="server_error", code="audio_backend_missing") from exc
 
         try:
-            content, media_type = encode_audio(speech.samples, speech.sample_rate, request.response_format)
+            content, media_type = encode_audio(
+                speech.samples,
+                speech.sample_rate,
+                request.response_format,
+                ffmpeg_path=active_settings.tts_ffmpeg_path,
+            )
         except ValueError as exc:
             raise openai_error(400, str(exc), type_="invalid_request_error", param="response_format") from exc
+        except AudioEncoderMissingError as exc:
+            raise openai_error(
+                503,
+                str(exc),
+                type_="server_error",
+                param="response_format",
+                code="audio_encoder_missing",
+            ) from exc
+        except AudioEncodingError as exc:
+            raise openai_error(
+                500,
+                str(exc),
+                type_="server_error",
+                param="response_format",
+                code="audio_encoding_failed",
+            ) from exc
         except RuntimeError as exc:
             raise openai_error(503, str(exc), type_="server_error", code="audio_backend_missing") from exc
 

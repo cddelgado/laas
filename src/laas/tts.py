@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 import struct
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -26,6 +28,19 @@ class AudioNotDownloadedError(RuntimeError):
         self.path = path
         self.asset = asset
         super().__init__(f"{asset} file is not downloaded: {path}")
+
+
+class AudioEncoderMissingError(RuntimeError):
+    def __init__(self, response_format: str, encoder: str) -> None:
+        self.response_format = response_format
+        self.encoder = encoder
+        super().__init__(f"{response_format} output requires {encoder}, but it was not found")
+
+
+class AudioEncodingError(RuntimeError):
+    def __init__(self, response_format: str, message: str) -> None:
+        self.response_format = response_format
+        super().__init__(f"failed to encode {response_format} audio: {message}")
 
 
 class AudioBackend:
@@ -126,6 +141,9 @@ class AudioManager:
                 voices_downloaded=self.settings.tts_voices_path.exists(),
                 default_voice=self.settings.tts_default_voice,
                 default_lang=self.settings.tts_default_lang,
+                supported_formats=available_audio_formats(self.settings.tts_ffmpeg_path),
+                ffmpeg_path=resolve_ffmpeg_path(self.settings.tts_ffmpeg_path),
+                ffmpeg_available=resolve_ffmpeg_path(self.settings.tts_ffmpeg_path) is not None,
                 idle_unload_seconds=self.settings.tts_idle_unload_seconds,
                 last_used_at=self._last_used_at,
             )
@@ -291,10 +309,18 @@ def voices_from_file(path: Path) -> list[str]:
     return []
 
 
-def encode_audio(samples: Any, sample_rate: int, response_format: str) -> tuple[bytes, str]:
+def encode_audio(
+    samples: Any,
+    sample_rate: int,
+    response_format: str,
+    *,
+    ffmpeg_path: str = "ffmpeg",
+) -> tuple[bytes, str]:
     fmt = response_format.lower()
     if fmt == "pcm":
         return _encode_pcm16(samples), "audio/pcm"
+    if fmt in {"aac", "opus"}:
+        return _encode_with_ffmpeg(samples, sample_rate, fmt, ffmpeg_path=ffmpeg_path)
 
     soundfile_format = {
         "mp3": ("MP3", "MPEG_LAYER_III", "audio/mpeg"),
@@ -316,6 +342,75 @@ def encode_audio(samples: Any, sample_rate: int, response_format: str) -> tuple[
         kwargs["subtype"] = subtype
     sf.write(buffer, _as_mono_float32(samples), sample_rate, **kwargs)
     return buffer.getvalue(), media_type
+
+
+def available_audio_formats(ffmpeg_path: str = "ffmpeg") -> list[str]:
+    formats = {"pcm"}
+    try:
+        import soundfile as sf
+
+        available = sf.available_formats()
+        if "MP3" in available:
+            formats.add("mp3")
+        if "WAV" in available:
+            formats.add("wav")
+        if "FLAC" in available:
+            formats.add("flac")
+    except Exception:
+        pass
+    if resolve_ffmpeg_path(ffmpeg_path):
+        formats.update({"aac", "opus"})
+    return sorted(formats)
+
+
+def resolve_ffmpeg_path(ffmpeg_path: str = "ffmpeg") -> str | None:
+    configured = Path(ffmpeg_path)
+    if configured.is_file():
+        return str(configured)
+    return shutil.which(ffmpeg_path)
+
+
+def _encode_with_ffmpeg(samples: Any, sample_rate: int, response_format: str, *, ffmpeg_path: str) -> tuple[bytes, str]:
+    executable = resolve_ffmpeg_path(ffmpeg_path)
+    if not executable:
+        raise AudioEncoderMissingError(response_format, "ffmpeg")
+
+    if response_format == "opus":
+        output_args = ["-f", "ogg", "-c:a", "libopus", "-b:a", "64k"]
+        media_type = "audio/ogg"
+    elif response_format == "aac":
+        output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "128k"]
+        media_type = "audio/aac"
+    else:
+        raise ValueError(f"unsupported audio response_format: {response_format}")
+
+    command = [
+        executable,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "s16le",
+        "-ar",
+        str(sample_rate),
+        "-ac",
+        "1",
+        "-i",
+        "pipe:0",
+        *output_args,
+        "pipe:1",
+    ]
+    result = subprocess.run(
+        command,
+        input=_encode_pcm16(samples),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip() or f"ffmpeg exited {result.returncode}"
+        raise AudioEncodingError(response_format, message)
+    return result.stdout, media_type
 
 
 def _encode_pcm16(samples: Any) -> bytes:
