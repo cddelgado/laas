@@ -23,6 +23,9 @@ class LocalModelStatus(BaseModel):
     is_loaded: bool
     model_path: str
     downloaded: bool
+    mmproj_path: str | None = None
+    mmproj_downloaded: bool = False
+    mmproj_required: bool = True
     capabilities: ModelCapabilities
     idle_unload_seconds: int
     last_used_at: float | None = None
@@ -32,6 +35,7 @@ class DownloadModelRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
     filename: str | None = None
+    include_mmproj: bool = True
 
 
 class LoadModelRequest(BaseModel):
@@ -117,6 +121,9 @@ class SettingsPatch(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
     hf_filename: str | None = None
+    mmproj_repo_id: str | None = None
+    mmproj_filename: str | None = None
+    mmproj_required: bool | None = None
     auto_load: bool | None = None
     auto_download: bool | None = None
     n_ctx: int | None = Field(default=None, gt=0)

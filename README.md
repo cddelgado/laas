@@ -110,6 +110,8 @@ The default Gemma model settings are:
 LAAS_MODEL_ID=gemma-4-e4b-it-q4_k_m
 LAAS_HF_REPO_ID=ggml-org/gemma-4-E4B-it-GGUF
 LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
+LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
+LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_DOWNLOAD=false
 ```
 
@@ -161,8 +163,9 @@ python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000
 ```
 
 When launched through `laas`, startup checks the configured model path before
-the server starts. If the model file is missing, LAAS prints the model id,
-Hugging Face repo, filename, and target path, then asks whether to download it.
+the server starts. If the model or projector file is missing, LAAS prints the
+model id, Hugging Face repo, filenames, and target paths, then asks whether to
+download the missing assets.
 
 To confirm from the prompt, answer `y` or `yes`.
 
@@ -188,7 +191,8 @@ present:
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/models/status
 ```
 
-Manual download and load:
+Manual download and load. The download endpoint fetches the configured main GGUF
+and projector by default:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/download `
@@ -221,6 +225,10 @@ endpoints.
 Set `LAAS_AUTO_DOWNLOAD=true` only if you want LAAS to download a missing model
 during auto-load or first inference. With the default `LAAS_AUTO_DOWNLOAD=false`,
 downloads happen only after an explicit local download/load request.
+
+Gemma 4 multimodal requests require the projector. The default Q4 main model is
+paired with the repo's Q8 projector because the repo does not publish a Q4
+projector. For text-only experiments, set `LAAS_MMPROJ_REQUIRED=false`.
 
 Unload it when you are done:
 

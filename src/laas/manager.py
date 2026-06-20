@@ -15,9 +15,10 @@ BackendFactory = Callable[[Path, Settings], InferenceBackend]
 
 
 class ModelNotDownloadedError(RuntimeError):
-    def __init__(self, model_path: Path) -> None:
+    def __init__(self, model_path: Path, asset: str = "model") -> None:
         self.model_path = model_path
-        super().__init__(f"model file is not downloaded: {model_path}")
+        self.asset = asset
+        super().__init__(f"{asset} file is not downloaded: {model_path}")
 
 
 class ModelManager:
@@ -50,6 +51,7 @@ class ModelManager:
 
     def status(self) -> LocalModelStatus:
         path = self.settings.model_path
+        mmproj_path = self.settings.mmproj_path
         with self._lock:
             self._unload_if_idle_locked()
             return LocalModelStatus(
@@ -58,22 +60,72 @@ class ModelManager:
                 is_loaded=self._backend is not None,
                 model_path=str(path),
                 downloaded=path.exists(),
+                mmproj_path=str(mmproj_path) if mmproj_path else None,
+                mmproj_downloaded=bool(mmproj_path and mmproj_path.exists()),
+                mmproj_required=self.settings.mmproj_required,
                 capabilities=self.capabilities,
                 idle_unload_seconds=self.settings.idle_unload_seconds,
                 last_used_at=self._last_used_at,
             )
 
-    def download(self, *, hf_repo_id: str | None = None, filename: str | None = None) -> Path:
-        repo_id = hf_repo_id or self.settings.hf_repo_id
-        target_filename = filename or self.settings.hf_filename
+    def download_file(self, *, repo_id: str, filename: str) -> Path:
         local_dir = self.settings.model_dir / repo_id.replace("/", "__")
         local_dir.mkdir(parents=True, exist_ok=True)
         downloaded = hf_hub_download(
             repo_id=repo_id,
-            filename=target_filename,
+            filename=filename,
             local_dir=local_dir,
         )
         return Path(downloaded)
+
+    def download(self, *, hf_repo_id: str | None = None, filename: str | None = None) -> Path:
+        repo_id = hf_repo_id or self.settings.hf_repo_id
+        target_filename = filename or self.settings.hf_filename
+        return self.download_file(repo_id=repo_id, filename=target_filename)
+
+    def download_mmproj(self) -> Path | None:
+        if not self.settings.mmproj_filename:
+            return None
+        return self.download_file(
+            repo_id=self.settings.resolved_mmproj_repo_id,
+            filename=self.settings.mmproj_filename,
+        )
+
+    def download_configured_assets(self, *, include_mmproj: bool = True) -> list[Path]:
+        downloaded = [self.download()]
+        if include_mmproj and self.settings.mmproj_filename:
+            mmproj = self.download_mmproj()
+            if mmproj:
+                downloaded.append(mmproj)
+        return downloaded
+
+    def missing_required_paths(self) -> list[tuple[str, Path]]:
+        missing: list[tuple[str, Path]] = []
+        if not self.settings.model_path.exists():
+            missing.append(("model", self.settings.model_path))
+        mmproj_path = self.settings.mmproj_path
+        if self.settings.mmproj_required and mmproj_path and not mmproj_path.exists():
+            missing.append(("mmproj", mmproj_path))
+        return missing
+
+    def _ensure_required_assets(self, *, download_if_missing: bool) -> None:
+        missing = self.missing_required_paths()
+        if not missing:
+            return
+        if not download_if_missing:
+            asset, path = missing[0]
+            raise ModelNotDownloadedError(path, asset=asset)
+
+        for asset, _path in missing:
+            if asset == "model":
+                self.download()
+            elif asset == "mmproj":
+                self.download_mmproj()
+
+        remaining = self.missing_required_paths()
+        if remaining:
+            asset, path = remaining[0]
+            raise ModelNotDownloadedError(path, asset=asset)
 
     def load(
         self,
@@ -97,11 +149,8 @@ class ModelManager:
             if filename:
                 self.settings.hf_filename = filename
 
+            self._ensure_required_assets(download_if_missing=download_if_missing)
             model_path = self.settings.model_path
-            if not model_path.exists():
-                if not download_if_missing:
-                    raise ModelNotDownloadedError(model_path)
-                model_path = self.download(hf_repo_id=hf_repo_id, filename=filename)
 
             self._backend = self._backend_factory(model_path, self.settings)
             self._loaded_model = desired_model
@@ -137,4 +186,5 @@ class ModelManager:
             n_gpu_layers=settings.n_gpu_layers,
             n_threads=settings.n_threads,
             verbose=settings.verbose_llama,
+            mmproj_path=settings.mmproj_path if settings.mmproj_required else None,
         )

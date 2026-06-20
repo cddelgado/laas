@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import inspect
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Iterable
@@ -51,6 +52,7 @@ class LlamaCppBackend(InferenceBackend):
         n_gpu_layers: int,
         n_threads: int | None,
         verbose: bool,
+        mmproj_path: Path | None = None,
     ) -> None:
         try:
             from llama_cpp import Llama
@@ -65,6 +67,8 @@ class LlamaCppBackend(InferenceBackend):
         }
         if n_threads:
             kwargs["n_threads"] = n_threads
+        if mmproj_path:
+            _add_mmproj_kwargs(Llama, kwargs, mmproj_path)
         self._llm = Llama(**kwargs)
 
     def chat_completion(
@@ -218,3 +222,23 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
             texts = [part.get("text", "") for part in content if part.get("type") in {"text", "input_text"}]
             return " ".join(texts)
     return ""
+
+
+def _add_mmproj_kwargs(llama_cls: Any, kwargs: dict[str, Any], mmproj_path: Path) -> None:
+    signature = inspect.signature(llama_cls)
+    parameters = signature.parameters
+    if "mmproj" in parameters:
+        kwargs["mmproj"] = str(mmproj_path)
+        return
+    if "mmproj_path" in parameters:
+        kwargs["mmproj_path"] = str(mmproj_path)
+        return
+    if "clip_model_path" in parameters:
+        kwargs["clip_model_path"] = str(mmproj_path)
+        return
+    raise RuntimeError(
+        "The configured model requires a multimodal projector, but the installed "
+        "llama-cpp-python Llama constructor does not expose mmproj/mmproj_path/clip_model_path. "
+        "Install a llama-cpp-python build with multimodal projector support or set "
+        "LAAS_MMPROJ_REQUIRED=false for text-only use."
+    )

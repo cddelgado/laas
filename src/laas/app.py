@@ -62,8 +62,21 @@ def create_app(settings: Settings | None = None, manager: ModelManager | None = 
 
     @app.post("/v1/local/models/download")
     def download_model(request: DownloadModelRequest) -> dict[str, Any]:
-        path = active_manager.download(hf_repo_id=request.hf_repo_id, filename=request.filename)
-        return {"model_id": request.model_id or active_settings.model_id, "path": str(path), "downloaded": True}
+        if request.hf_repo_id or request.filename:
+            path = active_manager.download(hf_repo_id=request.hf_repo_id, filename=request.filename)
+            paths = [path]
+            if request.include_mmproj and not request.filename:
+                mmproj = active_manager.download_mmproj()
+                if mmproj:
+                    paths.append(mmproj)
+        else:
+            paths = active_manager.download_configured_assets(include_mmproj=request.include_mmproj)
+        return {
+            "model_id": request.model_id or active_settings.model_id,
+            "paths": [str(path) for path in paths],
+            "path": str(paths[0]),
+            "downloaded": True,
+        }
 
     @app.post("/v1/local/models/load")
     def load_model(request: LoadModelRequest) -> dict[str, Any]:
@@ -77,10 +90,10 @@ def create_app(settings: Settings | None = None, manager: ModelManager | None = 
         except ModelNotDownloadedError as exc:
             raise openai_error(
                 409,
-                "The configured model is not downloaded. Call POST /v1/local/models/download first, "
-                "or retry /v1/local/models/load with download_if_missing=true.",
+                f"The configured {exc.asset} is not downloaded. Call POST /v1/local/models/download first, "
+                "or retry POST /v1/local/models/load with download_if_missing=true.",
                 type_="invalid_request_error",
-                param="model",
+                param=exc.asset,
                 code="model_not_downloaded",
             ) from exc
         except RuntimeError as exc:

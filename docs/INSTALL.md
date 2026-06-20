@@ -263,6 +263,8 @@ LAAS_MODEL_DIR=D:\AI\Models
 LAAS_MODEL_ID=gemma-4-e4b-it-q4_k_m
 LAAS_HF_REPO_ID=ggml-org/gemma-4-E4B-it-GGUF
 LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
+LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
+LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_LOAD=false
 LAAS_AUTO_DOWNLOAD=false
 LAAS_IDLE_UNLOAD_SECONDS=900
@@ -275,6 +277,8 @@ LAAS_MODEL_DIR=/mnt/ai/models
 LAAS_MODEL_ID=gemma-4-e4b-it-q4_k_m
 LAAS_HF_REPO_ID=ggml-org/gemma-4-E4B-it-GGUF
 LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
+LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
+LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_LOAD=false
 LAAS_AUTO_DOWNLOAD=false
 LAAS_IDLE_UNLOAD_SECONDS=900
@@ -286,7 +290,8 @@ LAAS uses `huggingface-hub` to download the configured GGUF.
 
 The model is downloaded when either:
 
-- `POST /v1/local/models/download` is called.
+- `POST /v1/local/models/download` is called. By default this downloads both
+  the main GGUF and `LAAS_MMPROJ_FILENAME`.
 - `POST /v1/local/models/load` is called and the configured model file is
   missing, unless the request body sets `download_if_missing=false`.
 - The server starts with `LAAS_AUTO_LOAD=true`, the configured model file is
@@ -298,6 +303,11 @@ The model is downloaded when either:
 By default, `LAAS_AUTO_LOAD=false` and `LAAS_AUTO_DOWNLOAD=false`. Starting the
 API does not download or load the model until you explicitly ask it to.
 Inference requests return `model_not_downloaded` when the model file is missing.
+
+Gemma 4 multimodal requests require a projector. The default Q4 main model uses
+`mmproj-gemma-4-E4B-it-Q8_0.gguf` because the repo currently publishes Q8 and
+bf16 projectors, not a Q4 projector. Set `LAAS_MMPROJ_REQUIRED=false` only for
+text-only runs.
 
 Check status first:
 
@@ -314,7 +324,7 @@ curl http://127.0.0.1:8000/v1/local/models/status
 ```
 
 Manual download is the confirmation step. Run it only after you are ready for
-LAAS to fetch the configured GGUF into `LAAS_MODEL_DIR`.
+LAAS to fetch the configured GGUF and projector into `LAAS_MODEL_DIR`.
 
 Windows PowerShell:
 
@@ -416,9 +426,9 @@ python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 When launched through `laas`, startup checks the configured model path before
-the server starts. If the model file is missing, LAAS prints the model id,
-Hugging Face repo, filename, and target path, then asks whether to download it.
-Answer `y` or `yes` to confirm the download.
+the server starts. If the main model or projector file is missing, LAAS prints
+the model id, Hugging Face repo, filenames, and target paths, then asks whether
+to download the missing assets. Answer `y` or `yes` to confirm the download.
 
 To download without prompting:
 

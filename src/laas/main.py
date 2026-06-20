@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def missing_configured_model_paths(settings: Settings) -> list[Path]:
     """Return missing model paths. Kept as a list for future multi-model config."""
-    return [] if settings.model_path.exists() else [settings.model_path]
+    return [path for _asset, path in ModelManager(settings).missing_required_paths()]
 
 
 def confirm_missing_model_downloads(
@@ -51,19 +51,25 @@ def confirm_missing_model_downloads(
     assume_yes: bool = False,
     prompt: bool = True,
 ) -> list[Path]:
-    missing_paths = missing_configured_model_paths(settings)
+    missing_assets = ModelManager(settings).missing_required_paths()
+    missing_paths = [path for _asset, path in missing_assets]
     if not missing_paths:
         return []
 
-    output_fn("Configured model file is missing:")
+    output_fn("Configured model assets are missing:")
     output_fn(f"  model:    {settings.model_id}")
     output_fn(f"  repo:     {settings.hf_repo_id}")
     output_fn(f"  filename: {settings.hf_filename}")
-    output_fn(f"  path:     {settings.model_path}")
+    output_fn(f"  path:     {settings.model_path} ({'present' if settings.model_path.exists() else 'missing'})")
+    if settings.mmproj_filename:
+        mmproj_path = settings.mmproj_path
+        output_fn(f"  mmproj:   {settings.mmproj_filename}")
+        output_fn(f"  mmrepo:   {settings.resolved_mmproj_repo_id}")
+        output_fn(f"  mmpath:   {mmproj_path} ({'present' if mmproj_path and mmproj_path.exists() else 'missing'})")
 
     should_download = assume_yes
     if not should_download and prompt:
-        answer = input_fn("Download this model now? [y/N] ").strip().lower()
+        answer = input_fn("Download missing model assets now? [y/N] ").strip().lower()
         should_download = answer in {"y", "yes"}
 
     if not should_download:
@@ -71,10 +77,11 @@ def confirm_missing_model_downloads(
         output_fn("Download later with POST /v1/local/models/download, or restart with --yes-download.")
         return []
 
-    output_fn("Downloading configured model...")
-    downloaded = ModelManager(settings).download()
-    output_fn(f"Downloaded model to: {downloaded}")
-    return [downloaded]
+    output_fn("Downloading missing configured model assets...")
+    downloaded = ModelManager(settings).download_configured_assets(include_mmproj=True)
+    for path in downloaded:
+        output_fn(f"Downloaded: {path}")
+    return downloaded
 
 
 def main(argv: list[str] | None = None) -> None:

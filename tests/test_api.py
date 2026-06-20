@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from laas.app import create_app
-from laas.backends import EchoBackend
+from laas.backends import EchoBackend, _add_mmproj_kwargs
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
 from laas.manager import ModelManager
 from laas.settings import Settings, default_model_dir
@@ -26,6 +26,8 @@ def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool
     if write_model:
         (settings.model_path.parent).mkdir(parents=True, exist_ok=True)
         settings.model_path.write_bytes(b"test-model")
+        if settings.mmproj_path:
+            settings.mmproj_path.write_bytes(b"test-mmproj")
     return TestClient(create_app(settings=settings, manager=manager))
 
 
@@ -38,6 +40,7 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     status = client.get("/v1/local/models/status").json()
     assert status["configured_model"] == "gemma-4-e4b-it-q4_k_m"
     assert status["downloaded"] is True
+    assert status["mmproj_downloaded"] is True
     assert status["is_loaded"] is False
 
 
@@ -154,11 +157,12 @@ def test_missing_model_requires_manual_download_or_auto_download(tmp_path: Path,
 
 def test_load_downloads_missing_model_when_allowed(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path, write_model=False)
-    downloaded_path = tmp_path / "downloaded.gguf"
 
-    def fake_download(*args, **kwargs):
-        downloaded_path.write_bytes(b"downloaded")
-        return downloaded_path
+    def fake_download(*, repo_id, filename, local_dir):
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"downloaded")
+        return path
 
     monkeypatch.setattr("laas.manager.hf_hub_download", fake_download)
     response = client.post("/v1/local/models/load", json={})
@@ -168,11 +172,12 @@ def test_load_downloads_missing_model_when_allowed(tmp_path: Path, monkeypatch) 
 
 def test_inference_auto_downloads_when_enabled(tmp_path: Path, monkeypatch) -> None:
     client = make_client(tmp_path, write_model=False, auto_download=True)
-    downloaded_path = tmp_path / "downloaded.gguf"
 
-    def fake_download(*args, **kwargs):
-        downloaded_path.write_bytes(b"downloaded")
-        return downloaded_path
+    def fake_download(*, repo_id, filename, local_dir):
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"downloaded")
+        return path
 
     monkeypatch.setattr("laas.manager.hf_hub_download", fake_download)
     response = client.post(
@@ -200,10 +205,12 @@ def test_cli_parser_accepts_host_port_and_reload() -> None:
 
 def test_missing_configured_model_paths(tmp_path: Path) -> None:
     settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json")
-    assert missing_configured_model_paths(settings) == [settings.model_path]
+    assert missing_configured_model_paths(settings) == [settings.model_path, settings.mmproj_path]
 
     settings.model_path.parent.mkdir(parents=True, exist_ok=True)
     settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
     assert missing_configured_model_paths(settings) == []
 
 
@@ -224,11 +231,12 @@ def test_confirm_missing_model_download_decline(tmp_path: Path, monkeypatch) -> 
 
 def test_confirm_missing_model_download_accept(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json")
-    downloaded_path = tmp_path / "downloaded.gguf"
 
-    def fake_download(*args, **kwargs):
-        downloaded_path.write_bytes(b"downloaded")
-        return downloaded_path
+    def fake_download(*, repo_id, filename, local_dir):
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"downloaded")
+        return path
 
     monkeypatch.setattr("laas.manager.hf_hub_download", fake_download)
     downloaded = confirm_missing_model_downloads(
@@ -238,4 +246,27 @@ def test_confirm_missing_model_download_accept(tmp_path: Path, monkeypatch) -> N
         prompt=True,
     )
 
-    assert downloaded == [downloaded_path]
+    assert downloaded == [settings.model_path, settings.mmproj_path]
+
+
+def test_backend_mmproj_kwargs_are_mapped(tmp_path: Path) -> None:
+    class SupportsMmproj:
+        def __init__(self, model_path: str, mmproj: str) -> None:
+            pass
+
+    kwargs = {"model_path": "model.gguf"}
+    _add_mmproj_kwargs(SupportsMmproj, kwargs, tmp_path / "mmproj.gguf")
+    assert kwargs["mmproj"] == str(tmp_path / "mmproj.gguf")
+
+
+def test_backend_mmproj_kwargs_fail_without_support(tmp_path: Path) -> None:
+    class TextOnly:
+        def __init__(self, model_path: str) -> None:
+            pass
+
+    try:
+        _add_mmproj_kwargs(TextOnly, {"model_path": "model.gguf"}, tmp_path / "mmproj.gguf")
+    except RuntimeError as exc:
+        assert "multimodal projector" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")

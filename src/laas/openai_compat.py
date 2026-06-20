@@ -122,11 +122,11 @@ def _get_backend(manager: ModelManager):
     except ModelNotDownloadedError as exc:
         raise openai_error(
             409,
-            "The configured model is not downloaded. Call POST /v1/local/models/download and "
+            f"The configured {exc.asset} is not downloaded. Call POST /v1/local/models/download and "
             "POST /v1/local/models/load before inference, or set LAAS_AUTO_DOWNLOAD=true to allow "
-            "LAAS to download missing model files during load.",
+            "LAAS to download missing model assets during load.",
             type_="invalid_request_error",
-            param="model",
+            param=exc.asset,
             code="model_not_downloaded",
         ) from exc
 

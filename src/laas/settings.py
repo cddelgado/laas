@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     model_id: str = "gemma-4-e4b-it-q4_k_m"
     hf_repo_id: str = "ggml-org/gemma-4-E4B-it-GGUF"
     hf_filename: str = "gemma-4-E4B-it-Q4_K_M.gguf"
+    mmproj_repo_id: str | None = None
+    mmproj_filename: str | None = "mmproj-gemma-4-E4B-it-Q8_0.gguf"
+    mmproj_required: bool = True
     auto_load: bool = False
     auto_download: bool = False
     n_ctx: int = 32768
@@ -45,6 +48,16 @@ class Settings(BaseSettings):
     def model_path(self) -> Path:
         return self.model_dir / self.hf_repo_id.replace("/", "__") / self.hf_filename
 
+    @property
+    def resolved_mmproj_repo_id(self) -> str:
+        return self.mmproj_repo_id or self.hf_repo_id
+
+    @property
+    def mmproj_path(self) -> Path | None:
+        if not self.mmproj_filename:
+            return None
+        return self.model_dir / self.resolved_mmproj_repo_id.replace("/", "__") / self.mmproj_filename
+
     def public_dict(self) -> dict[str, Any]:
         return {
             "host": self.host,
@@ -53,6 +66,9 @@ class Settings(BaseSettings):
             "model_id": self.model_id,
             "hf_repo_id": self.hf_repo_id,
             "hf_filename": self.hf_filename,
+            "mmproj_repo_id": self.mmproj_repo_id,
+            "mmproj_filename": self.mmproj_filename,
+            "mmproj_required": self.mmproj_required,
             "auto_load": self.auto_load,
             "auto_download": self.auto_download,
             "n_ctx": self.n_ctx,
