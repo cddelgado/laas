@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from laas.app import create_app
 from laas.backends import EchoBackend
 from laas.manager import ModelManager
-from laas.settings import Settings
+from laas.settings import Settings, default_model_dir
 
 
 def make_client(tmp_path: Path) -> TestClient:
@@ -132,3 +132,11 @@ def test_patch_model_directory_setting(tmp_path: Path) -> None:
     target = tmp_path / "models"
     response = client.patch("/v1/local/settings", json={"model_dir": str(target)}).json()
     assert response["model_dir"] == str(target)
+
+
+def test_default_model_dir_is_platform_specific(monkeypatch) -> None:
+    monkeypatch.setattr("sys.platform", "win32")
+    assert default_model_dir() == Path(r"D:\AI\Models")
+
+    monkeypatch.setattr("sys.platform", "linux")
+    assert default_model_dir() == Path.home() / "AI" / "Models"

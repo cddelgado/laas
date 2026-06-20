@@ -1,16 +1,21 @@
 # Installation
 
-LAAS is a Python package and a FastAPI service. Keep it in a virtual
-environment, install the API host first, then install the llama.cpp backend wheel
+LAAS is a Python package and a FastAPI service. Use a virtual environment,
+install the API host first, then install the `llama-cpp-python` backend wheel
 that matches your machine.
 
 The `laas` console command and `python -m uvicorn laas.app:app ...` both use the
 Python environment they are launched from. If `llama-cpp-python` is installed in
 a different environment, model loading will fail.
 
-## 1. Create an environment
+The upstream `llama-cpp-python` project documents the current backend wheel
+indexes here:
 
-PowerShell:
+<https://github.com/abetlen/llama-cpp-python#supported-backends>
+
+## 1. Create an Environment
+
+Windows PowerShell:
 
 ```powershell
 python -m venv .venv
@@ -18,60 +23,74 @@ python -m venv .venv
 python -m pip install --upgrade pip setuptools wheel
 ```
 
-## 2. Install the API host
+macOS/Linux:
 
-For normal use:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+```
 
-```powershell
+## 2. Install the API Host
+
+Normal install:
+
+```bash
 python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
-For development and tests:
+Development and tests:
 
-```powershell
+```bash
 python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 ```
 
-The equivalent modern packaging command is:
+Equivalent `pyproject.toml` extras install:
 
-```powershell
+```bash
 python -m pip install -e ".[dev]"
 ```
 
 The requirements files are present so contributors and packagers can see the
-dependency sets without needing to parse `pyproject.toml`.
+dependency sets without parsing `pyproject.toml`.
 
-## 3. Install a llama.cpp backend wheel
+## 3. Install a llama.cpp Backend
 
-`llama-cpp-python` is deliberately separate from the base install because the
-right wheel depends on CPU/GPU hardware, Python version, CUDA version, and OS.
+`llama-cpp-python` is separate from the base install because the correct wheel
+depends on OS, Python version, GPU vendor, driver/runtime, and acceleration
+backend.
 
-The upstream project documents pre-built CPU, CUDA, Metal, ROCm, Vulkan, and
-HIP Radeon wheels in the llama-cpp-python README:
+Install exactly one backend wheel first. If you change backend, reinstall
+`llama-cpp-python` with `--upgrade --force-reinstall --no-cache-dir`.
 
-<https://github.com/abetlen/llama-cpp-python#supported-backends>
+### CPU
 
-### CPU wheel
+Most portable, slowest:
 
-This is the most portable option and the slowest option:
-
-```powershell
+```bash
 python -m pip install -r requirements-llama-cpu.txt
 ```
 
-Equivalent explicit command:
+Explicit command:
+
+```bash
+python -m pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+```
+
+PowerShell explicit command:
 
 ```powershell
 python -m pip install llama-cpp-python `
   --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 ```
 
-### NVIDIA CUDA wheel
+### NVIDIA CUDA
 
 Pick the wheel index matching your CUDA runtime. As of the upstream README
-checked while writing this, CUDA wheel indexes include:
+checked for this doc, CUDA indexes include:
 
 - `cu118`
 - `cu121`
@@ -84,67 +103,151 @@ checked while writing this, CUDA wheel indexes include:
 
 Example for CUDA 12.4:
 
+```bash
+python -m pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+```
+
+PowerShell:
+
 ```powershell
 python -m pip install llama-cpp-python `
   --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 ```
 
-Example for CUDA 12.1:
+### Apple Metal
+
+Prebuilt Metal wheel:
+
+```bash
+python -m pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/metal
+```
+
+Source build fallback:
+
+```bash
+CMAKE_ARGS="-DGGML_METAL=on" python -m pip install llama-cpp-python
+```
+
+On Apple Silicon, use an arm64 Python build. An x86_64 Python can install but
+will build/run the wrong architecture.
+
+### AMD ROCm on Linux
+
+Prebuilt ROCm wheel:
+
+```bash
+python -m pip install -r requirements-llama-rocm.txt
+```
+
+Explicit command:
+
+```bash
+python -m pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/rocm72
+```
+
+Source build fallback:
+
+```bash
+CMAKE_ARGS="-DGGML_HIP=on" python -m pip install llama-cpp-python
+```
+
+### AMD HIP Radeon on Windows
+
+Prebuilt HIP Radeon wheel:
+
+```powershell
+python -m pip install -r requirements-llama-hip-radeon.txt
+```
+
+Explicit command:
 
 ```powershell
 python -m pip install llama-cpp-python `
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/hip-radeon
 ```
 
-Then verify the wheel imports from the same environment:
+### Vulkan on Linux or Windows
+
+Vulkan is useful when CUDA/ROCm/Metal is not the right fit and a Vulkan-capable
+GPU stack is available.
+
+Prebuilt Vulkan wheel:
+
+```bash
+python -m pip install -r requirements-llama-vulkan.txt
+```
+
+Explicit command:
+
+```bash
+python -m pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan
+```
+
+PowerShell explicit command:
 
 ```powershell
+python -m pip install llama-cpp-python `
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/vulkan
+```
+
+Source build fallback:
+
+```bash
+CMAKE_ARGS="-DGGML_VULKAN=on" python -m pip install llama-cpp-python
+```
+
+PowerShell source build fallback:
+
+```powershell
+$env:CMAKE_ARGS = "-DGGML_VULKAN=on"
+python -m pip install llama-cpp-python
+```
+
+### Verify the Backend
+
+Run this from the same activated environment:
+
+```bash
 python -c "import llama_cpp; print(llama_cpp.__version__)"
 ```
 
-If the model loads but all layers run on CPU, reinstall the wheel with the
-correct CUDA index and confirm your NVIDIA driver/runtime can load that CUDA
-version. LAAS passes `n_gpu_layers=-1` by default, so it will try to offload all
+If a GPU backend installs but inference runs on CPU, reinstall the wheel with
+the correct backend index and confirm the OS driver/runtime can load that
+backend. LAAS passes `n_gpu_layers=-1` by default, so it attempts to offload all
 possible layers when the installed backend supports GPU offload.
 
-### Build from source
-
-Use this only when no wheel matches your machine:
-
-```powershell
-$env:CMAKE_ARGS = "-DGGML_CUDA=on"
-$env:FORCE_CMAKE = "1"
-python -m pip install --upgrade --force-reinstall --no-cache-dir llama-cpp-python
-```
-
-For CPU/OpenBLAS, Metal, Vulkan, ROCm, and HIP Radeon build flags, use the
-upstream llama-cpp-python backend instructions.
-
-## 4. Optional video frame extraction
+## 4. Optional Video Frame Extraction
 
 LAAS accepts video inputs by translating video to image frames before sending the
 request to Gemma. If the client sends `frames`, OpenCV is not needed. If the
 client sends a video file path, URL, or data URL, install:
 
-```powershell
+```bash
 python -m pip install -r requirements-video.txt
 ```
 
 or:
 
-```powershell
+```bash
 python -m pip install -e ".[video]"
 ```
 
-## 5. Configure model storage
+## 5. Configure Model Storage
 
-The default model directory is:
+Built-in defaults:
 
 ```text
-D:\AI\Models
+Windows: D:\AI\Models
+macOS/Linux: ~/AI/Models
 ```
 
-That default is intentional so large models do not land on the OS drive.
+The Windows default is intentional for the original development workstation so
+large models do not land on the OS drive. On macOS/Linux, set `LAAS_MODEL_DIR`
+if `~/AI/Models` is not where you want model files.
 
 Configuration order:
 
@@ -153,7 +256,7 @@ Configuration order:
 3. `.laas/settings.json`, written by `PATCH /v1/local/settings`.
 4. Built-in defaults.
 
-Example `.env`:
+Windows `.env` example:
 
 ```text
 LAAS_MODEL_DIR=D:\AI\Models
@@ -164,60 +267,91 @@ LAAS_AUTO_LOAD=false
 LAAS_IDLE_UNLOAD_SECONDS=900
 ```
 
-## 6. Download/load behavior
+macOS/Linux `.env` example:
+
+```text
+LAAS_MODEL_DIR=/mnt/ai/models
+LAAS_MODEL_ID=gemma-4-e4b-it-q4_k_m
+LAAS_HF_REPO_ID=ggml-org/gemma-4-E4B-it-GGUF
+LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
+LAAS_AUTO_LOAD=false
+LAAS_IDLE_UNLOAD_SECONDS=900
+```
+
+## 6. Download/Load Behavior
 
 LAAS uses `huggingface-hub` to download the configured GGUF.
 
 The model is downloaded when either:
 
-- `POST /v1/local/models/download` is called, or
+- `POST /v1/local/models/download` is called.
 - `POST /v1/local/models/load` is called and the configured model file is
-  missing, or
-- the server starts with `LAAS_AUTO_LOAD=true` and the configured model file is
   missing.
+- The server starts with `LAAS_AUTO_LOAD=true` and the configured model file is
+  missing.
+- An inference endpoint is called while the model is unloaded; LAAS attempts to
+  load the model, and that load path downloads the file if it is missing.
 
-By default, `LAAS_AUTO_LOAD=false`. That means starting the API does not
-download or load the model until you explicitly ask it to.
+By default, `LAAS_AUTO_LOAD=false`. Starting the API does not download or load
+the model until you explicitly ask it to or send an inference request.
 
-Download and load manually:
+Windows PowerShell:
 
 ```powershell
-curl -X POST http://127.0.0.1:8000/v1/local/models/download `
-  -H "Content-Type: application/json" `
-  -d "{}"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/download `
+  -ContentType "application/json" `
+  -Body "{}"
 
-curl -X POST http://127.0.0.1:8000/v1/local/models/load `
-  -H "Content-Type: application/json" `
-  -d "{}"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/load `
+  -ContentType "application/json" `
+  -Body "{}"
 ```
 
-If the model is not loaded and a client calls an inference endpoint, LAAS will
-attempt to load it. If the model file is missing, that load path also downloads
-the model first.
+macOS/Linux:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/local/models/download \
+  -H "Content-Type: application/json" \
+  -d "{}"
+
+curl -X POST http://127.0.0.1:8000/v1/local/models/load \
+  -H "Content-Type: application/json" \
+  -d "{}"
+```
 
 ## 7. Run
 
 Normal mode:
 
-```powershell
+```bash
 laas
 ```
 
 Direct uvicorn mode:
 
-```powershell
+```bash
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000
 ```
 
 Development reload mode:
 
-```powershell
+```bash
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ## 8. Verify
 
+Windows PowerShell:
+
 ```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/health
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/models
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/models/status
+```
+
+macOS/Linux:
+
+```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/v1/models
 curl http://127.0.0.1:8000/v1/local/models/status
@@ -225,15 +359,21 @@ curl http://127.0.0.1:8000/v1/local/models/status
 
 Run tests:
 
-```powershell
+```bash
 python -m pytest
 ```
 
 ## 9. Unload
 
-Unload explicitly:
+Windows PowerShell:
 
 ```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/unload
+```
+
+macOS/Linux:
+
+```bash
 curl -X POST http://127.0.0.1:8000/v1/local/models/unload
 ```
 

@@ -29,6 +29,8 @@ otherwise install the optional video extra so OpenCV can extract frames.
 Detailed environment, wheel, and install-order guidance is in
 [docs/INSTALL.md](docs/INSTALL.md).
 
+Windows PowerShell:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -37,21 +39,39 @@ python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 ```
 
+macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements-dev.txt
+python -m pip install -e .
+```
+
 Then install the `llama-cpp-python` wheel that matches your hardware. CPU-only:
 
-```powershell
+```bash
 python -m pip install -r requirements-llama-cpu.txt
 ```
 
-NVIDIA CUDA example:
+NVIDIA CUDA example for PowerShell:
 
 ```powershell
 python -m pip install llama-cpp-python `
   --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
 ```
 
-Use the CUDA wheel index that matches your machine. The upstream
-`llama-cpp-python` project documents the current pre-built wheel indexes at
+NVIDIA CUDA example for macOS/Linux shells:
+
+```bash
+python -m pip install llama-cpp-python \
+  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+```
+
+ROCm and Vulkan options are documented in [docs/INSTALL.md](docs/INSTALL.md).
+Use the wheel index that matches your machine. The upstream `llama-cpp-python`
+project documents the current pre-built wheel indexes at
 <https://github.com/abetlen/llama-cpp-python#supported-backends>.
 
 ## Configure
@@ -59,13 +79,22 @@ Use the CUDA wheel index that matches your machine. The upstream
 By default, LAAS downloads models to:
 
 ```text
-D:\AI\Models
+Windows: D:\AI\Models
+macOS/Linux: ~/AI/Models
 ```
 
 Override with `.env`, environment variables, or the local settings endpoint:
 
+Windows PowerShell:
+
 ```powershell
 Copy-Item .env.example .env
+```
+
+macOS/Linux:
+
+```bash
+cp .env.example .env
 ```
 
 ```http
@@ -92,18 +121,30 @@ laas
 or:
 
 ```powershell
-uvicorn laas.app:app --host 127.0.0.1 --port 8000
+python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000
 ```
 
 Download and load the model:
 
 ```powershell
-curl -X POST http://127.0.0.1:8000/v1/local/models/download `
-  -H "Content-Type: application/json" `
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/download `
+  -ContentType "application/json" `
+  -Body "{}"
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/load `
+  -ContentType "application/json" `
+  -Body "{}"
+```
+
+macOS/Linux:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/local/models/download \
+  -H "Content-Type: application/json" \
   -d "{}"
 
-curl -X POST http://127.0.0.1:8000/v1/local/models/load `
-  -H "Content-Type: application/json" `
+curl -X POST http://127.0.0.1:8000/v1/local/models/load \
+  -H "Content-Type: application/json" \
   -d "{}"
 ```
 
@@ -115,6 +156,12 @@ same download-then-load path runs when the server starts. With the default
 Unload it when you are done:
 
 ```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/unload
+```
+
+macOS/Linux:
+
+```bash
 curl -X POST http://127.0.0.1:8000/v1/local/models/unload
 ```
 

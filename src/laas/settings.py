@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_SETTINGS_FILE = Path(".laas/settings.json")
+
+
+def default_model_dir() -> Path:
+    if sys.platform.startswith("win"):
+        return Path(r"D:\AI\Models")
+    return Path.home() / "AI" / "Models"
 
 
 class Settings(BaseSettings):
@@ -21,7 +28,7 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = 8000
-    model_dir: Path = Field(default=Path(r"D:\AI\Models"))
+    model_dir: Path = Field(default_factory=default_model_dir)
     model_id: str = "gemma-4-e4b-it-q4_k_m"
     hf_repo_id: str = "ggml-org/gemma-4-E4B-it-GGUF"
     hf_filename: str = "gemma-4-E4B-it-Q4_K_M.gguf"
