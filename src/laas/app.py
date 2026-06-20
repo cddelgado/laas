@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import os
 import tempfile
+import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -11,8 +14,9 @@ from fastapi.responses import PlainTextResponse
 
 from .errors import openai_error
 from .manager import ModelManager, ModelNotDownloadedError
-from .openai_compat import build_openai_router
+from .openai_compat import _normalize_chat_response, build_openai_router
 from .schemas import (
+    CreateVoiceSessionRequest,
     DownloadAudioRequest,
     DownloadModelRequest,
     DownloadTranscriptionRequest,
@@ -79,6 +83,7 @@ def create_app(
     app.state.manager = active_manager
     app.state.audio_manager = active_audio_manager
     app.state.transcription_manager = active_transcription_manager
+    app.state.voice_sessions = {}
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -299,11 +304,178 @@ def create_app(
     def unload_voice_stack() -> dict[str, Any]:
         audio_status = active_audio_manager.unload()
         transcription_status = active_transcription_manager.unload()
+        app.state.voice_sessions.clear()
         return LocalVoiceStackStatus(
             tts=audio_status,
             transcription=transcription_status,
             is_loaded=False,
         ).model_dump()
+
+    @app.post("/v1/local/voice/sessions")
+    def create_voice_session(request: CreateVoiceSessionRequest) -> dict[str, Any]:
+        if request.model and request.model != active_settings.model_id:
+            raise openai_error(
+                404,
+                f"The model '{request.model}' is not loaded. Loaded/configured model is '{active_settings.model_id}'.",
+                param="model",
+                code="model_not_found",
+            )
+        try:
+            active_manager.load(download_if_missing=request.download_if_missing)
+            active_audio_manager.load(download_if_missing=request.download_if_missing)
+            active_transcription_manager.load(download_if_missing=request.download_if_missing)
+        except ModelNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="model_not_downloaded") from exc
+        except AudioNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="audio_not_downloaded") from exc
+        except TranscriptionNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                f"The configured {exc.asset} is not downloaded.",
+                param=exc.asset,
+                code="transcription_not_downloaded",
+            ) from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="voice_backend_missing") from exc
+
+        session_id = f"vs_{uuid.uuid4().hex}"
+        now = int(time.time())
+        messages = []
+        if request.instructions:
+            messages.append({"role": "system", "content": request.instructions})
+        session = {
+            "id": session_id,
+            "object": "local.voice.session",
+            "created_at": now,
+            "updated_at": now,
+            "status": "active",
+            "model": active_settings.model_id,
+            "voice": request.voice,
+            "response_format": request.response_format,
+            "language": request.language,
+            "prompt": request.prompt,
+            "temperature": request.temperature,
+            "speed": request.speed,
+            "lang": request.lang,
+            "messages": messages,
+            "turns": [],
+        }
+        app.state.voice_sessions[session_id] = session
+        return _public_voice_session(session)
+
+    @app.get("/v1/local/voice/sessions/{session_id}")
+    def get_voice_session(session_id: str) -> dict[str, Any]:
+        session = _get_voice_session(session_id, app.state.voice_sessions)
+        return {**_public_voice_session(session), "turns": session["turns"]}
+
+    @app.delete("/v1/local/voice/sessions/{session_id}")
+    def delete_voice_session(session_id: str) -> dict[str, Any]:
+        session = _get_voice_session(session_id, app.state.voice_sessions)
+        session["status"] = "ended"
+        session["updated_at"] = int(time.time())
+        app.state.voice_sessions.pop(session_id, None)
+        return _public_voice_session(session)
+
+    @app.post("/v1/local/voice/sessions/{session_id}/turns")
+    async def create_voice_turn(
+        session_id: str,
+        file: UploadFile = File(...),
+        response_format: str | None = Form(None),
+        voice: str | None = Form(None),
+        language: str | None = Form(None),
+        prompt: str | None = Form(None),
+        temperature: float | None = Form(None),
+        speed: float | None = Form(None),
+    ) -> dict[str, Any]:
+        session = _get_voice_session(session_id, app.state.voice_sessions)
+        media_path = await _upload_to_temp_file(file)
+        try:
+            transcript = active_transcription_manager.transcribe(
+                media_path=media_path,
+                language=language if language is not None else session.get("language"),
+                prompt=prompt if prompt is not None else session.get("prompt"),
+                temperature=temperature if temperature is not None else session.get("temperature"),
+                translate=False,
+            )
+            user_message = {"role": "user", "content": transcript.text}
+            messages = [*session["messages"], user_message]
+            chat_result = active_manager.backend.chat_completion(
+                messages=messages,
+                model=active_settings.model_id,
+                tools=None,
+                tool_choice="none",
+                temperature=1.0,
+                top_p=1.0,
+                max_tokens=None,
+                stream=False,
+                extra_params={},
+            )
+            chat_response = _normalize_chat_response(chat_result, active_settings.model_id, None)
+            assistant_text = chat_response["choices"][0]["message"].get("content") or ""
+            assistant_message = {"role": "assistant", "content": assistant_text}
+            speech = active_audio_manager.synthesize(
+                text=assistant_text,
+                voice=voice if voice is not None else session.get("voice"),
+                speed=speed if speed is not None else session.get("speed"),
+                lang=session.get("lang"),
+                is_phonemes=False,
+                trim=True,
+            )
+            requested_format = response_format or session.get("response_format") or "pcm"
+            audio_content, media_type = encode_audio(
+                speech.samples,
+                speech.sample_rate,
+                requested_format,
+                ffmpeg_path=active_settings.tts_ffmpeg_path,
+            )
+        except TranscriptionNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="transcription_not_downloaded") from exc
+        except AudioNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="audio_not_downloaded") from exc
+        except ModelNotDownloadedError as exc:
+            raise openai_error(409, f"The configured {exc.asset} is not downloaded.", param=exc.asset, code="model_not_downloaded") from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error") from exc
+        except AudioEncoderMissingError as exc:
+            raise openai_error(503, str(exc), type_="server_error", param="response_format", code="audio_encoder_missing") from exc
+        except AudioEncodingError as exc:
+            raise openai_error(500, str(exc), type_="server_error", param="response_format", code="audio_encoding_failed") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="voice_backend_missing") from exc
+        finally:
+            media_path.unlink(missing_ok=True)
+
+        session["messages"] = [*session["messages"], user_message, assistant_message]
+        session["updated_at"] = int(time.time())
+        turn = {
+            "id": f"vturn_{uuid.uuid4().hex}",
+            "object": "local.voice.turn",
+            "session_id": session_id,
+            "created_at": session["updated_at"],
+            "transcript": {
+                "text": transcript.text,
+                "language": transcript.language,
+                "duration": transcript.duration,
+                "segments": [
+                    {
+                        "id": segment.id,
+                        "start": segment.start,
+                        "end": segment.end,
+                        "text": segment.text,
+                    }
+                    for segment in transcript.segments
+                ],
+            },
+            "response": {"text": assistant_text},
+            "audio": {
+                "data": base64.b64encode(audio_content).decode("ascii"),
+                "format": requested_format,
+                "media_type": media_type,
+                "sample_rate": speech.sample_rate,
+            },
+        }
+        session["turns"].append(turn)
+        return turn
 
     @app.post("/v1/audio/speech")
     def create_speech(request: SpeechRequest) -> Response:
@@ -480,6 +652,27 @@ async def _upload_to_temp_file(file: UploadFile) -> Path:
         os.close(fd)
         raise
     return Path(raw_path)
+
+
+def _get_voice_session(session_id: str, sessions: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    session = sessions.get(session_id)
+    if not session:
+        raise openai_error(404, f"The voice session '{session_id}' does not exist", param="session_id", code="not_found")
+    return session
+
+
+def _public_voice_session(session: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": session["id"],
+        "object": session["object"],
+        "created_at": session["created_at"],
+        "updated_at": session["updated_at"],
+        "status": session["status"],
+        "model": session["model"],
+        "voice": session["voice"],
+        "response_format": session["response_format"],
+        "turn_count": len(session["turns"]),
+    }
 
 
 app = create_app()

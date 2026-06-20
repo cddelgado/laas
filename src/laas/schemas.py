@@ -98,6 +98,21 @@ class LoadVoiceStackRequest(BaseModel):
     download_if_missing: bool = True
 
 
+class CreateVoiceSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str | None = None
+    instructions: str | None = None
+    voice: str | None = None
+    response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = "pcm"
+    language: str | None = None
+    prompt: str | None = None
+    temperature: float | None = 0.0
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
+    lang: str | None = None
+    download_if_missing: bool = True
+
+
 class SpeechRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

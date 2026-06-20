@@ -31,6 +31,10 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/voice/download`
 - `POST /v1/local/voice/load`
 - `POST /v1/local/voice/unload`
+- `POST /v1/local/voice/sessions`
+- `GET /v1/local/voice/sessions/{session_id}`
+- `DELETE /v1/local/voice/sessions/{session_id}`
+- `POST /v1/local/voice/sessions/{session_id}/turns`
 - `GET /v1/local/capabilities`
 
 The OpenAI-compatible endpoints accept OpenAI-style text, tool calls, image
@@ -390,6 +394,46 @@ print(response.json()["text"])
 `POST /v1/audio/translations` accepts the same multipart upload shape and asks
 Whisper to translate speech to English. Supported transcription response formats
 are `json`, `text`, `srt`, `verbose_json`, and `vtt`.
+
+For a full local voice turn, create a voice session and send audio to the turn
+endpoint. LAAS transcribes the audio with Whisper, sends the transcript to the
+loaded text model, synthesizes the assistant response with Kokoro, and returns
+the audio as base64 in the requested format:
+
+```python
+import base64
+from pathlib import Path
+
+import requests
+
+base_url = "http://127.0.0.1:8000"
+
+session = requests.post(
+    f"{base_url}/v1/local/voice/sessions",
+    json={
+        "instructions": "Answer briefly.",
+        "voice": "alloy",
+        "response_format": "wav",
+    },
+)
+session.raise_for_status()
+session_id = session.json()["id"]
+
+audio_path = Path("question.wav")
+with audio_path.open("rb") as fh:
+    turn = requests.post(
+        f"{base_url}/v1/local/voice/sessions/{session_id}/turns",
+        files={"file": (audio_path.name, fh, "audio/wav")},
+    )
+turn.raise_for_status()
+payload = turn.json()
+
+print("You said:", payload["transcript"]["text"])
+print("Assistant:", payload["response"]["text"])
+Path("answer.wav").write_bytes(base64.b64decode(payload["audio"]["data"]))
+
+requests.delete(f"{base_url}/v1/local/voice/sessions/{session_id}").raise_for_status()
+```
 
 Unload the full voice stack when you are done:
 

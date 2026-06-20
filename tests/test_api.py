@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -698,6 +699,43 @@ def test_voice_stack_loads_and_unloads_tts_and_transcription(tmp_path: Path) -> 
     assert unloaded["is_loaded"] is False
     assert audio_backend.closed is True
     assert transcription_backend.closed is True
+
+
+def test_voice_session_turn_transcribes_generates_and_synthesizes(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+
+    created = client.post(
+        "/v1/local/voice/sessions",
+        json={"instructions": "Be brief.", "voice": "alloy", "response_format": "pcm"},
+    )
+    assert created.status_code == 200
+    session = created.json()
+    assert session["status"] == "active"
+    assert session["turn_count"] == 0
+
+    turn_response = client.post(
+        f"/v1/local/voice/sessions/{session['id']}/turns",
+        files={"file": ("sample.wav", b"fake audio bytes", "audio/wav")},
+    )
+
+    assert turn_response.status_code == 200
+    turn = turn_response.json()
+    assert turn["session_id"] == session["id"]
+    assert turn["transcript"]["text"] == "hello from whisper"
+    assert turn["response"]["text"] == "hello from whisper"
+    assert base64.b64decode(turn["audio"]["data"]) == b"\x00\x00\xff?\x01\xc0"
+    assert turn["audio"]["format"] == "pcm"
+    assert audio_backend.calls[0]["text"] == "hello from whisper"
+    assert audio_backend.calls[0]["voice"] == "af_alloy"
+    assert transcription_backend.calls[0]["translate"] is False
+
+    current = client.get(f"/v1/local/voice/sessions/{session['id']}").json()
+    assert current["turn_count"] == 1
+    assert current["turns"][0]["id"] == turn["id"]
+
+    ended = client.delete(f"/v1/local/voice/sessions/{session['id']}").json()
+    assert ended["status"] == "ended"
+    assert client.get(f"/v1/local/voice/sessions/{session['id']}").status_code == 404
 
 
 def test_patch_model_directory_setting(tmp_path: Path) -> None:
