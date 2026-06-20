@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -41,6 +43,26 @@ def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool
     return TestClient(create_app(settings=settings, manager=manager))
 
 
+def make_client_with_backend(tmp_path: Path, backend: EchoBackend) -> TestClient:
+    settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json", idle_unload_seconds=0)
+    manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: backend)
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"test-model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"test-mmproj")
+    return TestClient(create_app(settings=settings, manager=manager))
+
+
+def sse_payloads(response) -> list[Any]:
+    payloads: list[Any] = []
+    for line in response.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        data = line.removeprefix("data: ")
+        payloads.append("[DONE]" if data == "[DONE]" else json.loads(data))
+    return payloads
+
+
 class CapturingBackend(EchoBackend):
     def __init__(self) -> None:
         self.chat_params: dict[str, object] = {}
@@ -53,6 +75,49 @@ class CapturingBackend(EchoBackend):
     def completion(self, **kwargs):
         self.completion_params = kwargs.get("extra_params") or {}
         return super().completion(**kwargs)
+
+
+class StreamingToolBackend(EchoBackend):
+    def chat_completion(self, **kwargs):
+        if not kwargs.get("stream"):
+            return super().chat_completion(**kwargs)
+        return iter(
+            [
+                {
+                    "id": "chatcmpl_raw",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": r"D:\AI\Models\gemma.gguf",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": '<|tool_call>call:get_weather{location:<|"|>Chi'},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_raw",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": r"D:\AI\Models\gemma.gguf",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": 'cago<|"|>}<tool_call|>'},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_raw",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": r"D:\AI\Models\gemma.gguf",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                },
+            ]
+        )
 
 
 class FakeAudioBackend(AudioBackend):
@@ -220,6 +285,87 @@ def test_tool_call_translation(tmp_path: Path) -> None:
     choice = response["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def test_chat_completion_streaming_text_is_normalized(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hello"}], "stream": True},
+    )
+
+    payloads = sse_payloads(response)
+    assert payloads[-1] == "[DONE]"
+    chunks = payloads[:-1]
+    assert chunks[0]["object"] == "chat.completion.chunk"
+    assert chunks[0]["model"] == "gemma-4-e4b-it-q4_k_m"
+    assert chunks[0]["choices"][0]["delta"]["content"] == "hello"
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_chat_completion_streaming_gemma_tool_markup_becomes_tool_call_delta(tmp_path: Path) -> None:
+    client = make_client_with_backend(tmp_path, StreamingToolBackend())
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "call_tool"}],
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        },
+    )
+
+    payloads = sse_payloads(response)
+    chunks = payloads[:-1]
+    serialized = json.dumps(chunks)
+    assert r"D:\\AI\\Models" not in serialized
+    assert "<|tool_call" not in serialized
+    assert all(chunk["model"] == "gemma-4-e4b-it-q4_k_m" for chunk in chunks)
+
+    tool_delta = next(chunk["choices"][0]["delta"] for chunk in chunks if "tool_calls" in chunk["choices"][0]["delta"])
+    tool_call = tool_delta["tool_calls"][0]
+    assert tool_call["function"]["name"] == "get_weather"
+    assert tool_call["function"]["arguments"] == '{"location":"Chicago"}'
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_responses_streaming_tool_calls_use_responses_events(tmp_path: Path) -> None:
+    client = make_client_with_backend(tmp_path, StreamingToolBackend())
+
+    response = client.post(
+        "/v1/responses",
+        json={
+            "input": "call_tool",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        },
+    )
+
+    payloads = sse_payloads(response)
+    events = payloads[:-1]
+    assert events[0]["type"] == "response.created"
+    assert any(event["type"] == "response.output_item.added" for event in events)
+    argument_delta = next(event for event in events if event["type"] == "response.function_call_arguments.delta")
+    assert argument_delta["delta"] == '{"location":"Chicago"}'
+    completed = next(event for event in events if event["type"] == "response.completed")
+    assert completed["response"]["model"] == "gemma-4-e4b-it-q4_k_m"
+    assert completed["response"]["output"][0]["name"] == "get_weather"
 
 
 def test_chat_completion_sampling_params_are_forwarded(tmp_path: Path) -> None:

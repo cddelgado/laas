@@ -55,7 +55,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             extra_params=_chat_sampling_params(request),
         )
         if request.stream:
-            return _sse(result)
+            return _sse(_normalize_chat_stream(result, manager.settings.model_id, tools))
         return _normalize_chat_response(result, manager.settings.model_id, tools)
 
     @router.post("/completions")
@@ -72,7 +72,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             extra_params=_completion_sampling_params(request),
         )
         if request.stream:
-            return _sse(result)
+            return _sse(_normalize_completion_stream(result, manager.settings.model_id))
         return _normalize_completion_response(result, manager.settings.model_id)
 
     @router.post("/responses")
@@ -118,7 +118,8 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             extra_params=_chat_sampling_params(chat_request),
         )
         if request.stream:
-            return _sse(_responses_stream(result, manager.settings.model_id))
+            chat_chunks = _normalize_chat_stream(result, manager.settings.model_id, chat_request.tools)
+            return _sse(_responses_stream(chat_chunks, manager.settings.model_id))
         chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools)
         return _chat_to_response(chat_response, request, manager.settings.model_id)
 
@@ -296,6 +297,163 @@ def _normalize_completion_response(result: Any, model_id: str) -> dict[str, Any]
     return result
 
 
+def _normalize_chat_stream(
+    chunks: Any,
+    model_id: str,
+    tools: list[dict[str, Any]] | None,
+) -> Iterable[dict[str, Any]]:
+    stream_id = f"chatcmpl_{uuid.uuid4().hex}"
+    created = int(time.time())
+    content_buffer: list[str] = []
+    final_finish_reason: str | None = None
+
+    if tools:
+        pending_tool_calls: list[dict[str, Any]] = []
+        for raw_chunk in chunks:
+            chunk = _normalized_stream_chunk(raw_chunk, model_id, "chat.completion.chunk", stream_id, created)
+            stream_id = chunk["id"]
+            created = chunk["created"]
+            choices = chunk.get("choices", [])
+            for choice in choices:
+                final_finish_reason = choice.get("finish_reason") or final_finish_reason
+                delta = choice.get("delta") or {}
+                if delta.get("content"):
+                    content_buffer.append(delta["content"])
+                pending_tool_calls.extend(delta.get("tool_calls") or [])
+
+        content = "".join(content_buffer)
+        parsed_tool_calls = parse_tool_calls(content, tools)
+        tool_calls = pending_tool_calls or parsed_tool_calls
+        visible_content = remove_tool_call_markup(content) if parsed_tool_calls else content
+        if visible_content:
+            yield _chat_stream_chunk(
+                stream_id,
+                created,
+                model_id,
+                {"role": "assistant", "content": visible_content},
+                finish_reason=None,
+            )
+        elif tool_calls:
+            yield _chat_stream_chunk(stream_id, created, model_id, {"role": "assistant"}, finish_reason=None)
+        for index, call in enumerate(tool_calls):
+            yield _chat_stream_chunk(
+                stream_id,
+                created,
+                model_id,
+                {
+                    "tool_calls": [
+                        {
+                            "index": index,
+                            "id": call["id"],
+                            "type": call.get("type", "function"),
+                            "function": {
+                                "name": call.get("function", {}).get("name"),
+                                "arguments": call.get("function", {}).get("arguments", ""),
+                            },
+                        }
+                    ]
+                },
+                finish_reason=None,
+            )
+        yield _chat_stream_chunk(
+            stream_id,
+            created,
+            model_id,
+            {},
+            finish_reason="tool_calls" if tool_calls else final_finish_reason or "stop",
+        )
+        return
+
+    for raw_chunk in chunks:
+        yield _normalized_stream_chunk(raw_chunk, model_id, "chat.completion.chunk", stream_id, created)
+
+
+def _normalize_completion_stream(chunks: Any, model_id: str) -> Iterable[dict[str, Any]]:
+    stream_id = f"cmpl_{uuid.uuid4().hex}"
+    created = int(time.time())
+    for raw_chunk in chunks:
+        yield _normalized_stream_chunk(raw_chunk, model_id, "text_completion", stream_id, created)
+
+
+def _normalized_stream_chunk(
+    raw_chunk: Any,
+    model_id: str,
+    object_name: str,
+    fallback_id: str,
+    fallback_created: int,
+) -> dict[str, Any]:
+    if not isinstance(raw_chunk, dict):
+        raw_chunk = {"choices": [{"index": 0, "delta": {"content": str(raw_chunk)}, "finish_reason": None}]}
+    chunk = dict(raw_chunk)
+    chunk["id"] = chunk.get("id") or fallback_id
+    chunk["object"] = object_name
+    chunk["created"] = chunk.get("created") or fallback_created
+    chunk["model"] = model_id
+    chunk["choices"] = [_normalize_stream_choice(choice) for choice in chunk.get("choices", [])]
+    return chunk
+
+
+def _normalize_stream_choice(choice: Any) -> dict[str, Any]:
+    if not isinstance(choice, dict):
+        choice = {"index": 0, "delta": {"content": str(choice)}, "finish_reason": None}
+    normalized = dict(choice)
+    if "delta" not in normalized and "text" in normalized:
+        normalized["delta"] = {"content": normalized.pop("text")}
+    delta = normalized.get("delta")
+    if isinstance(delta, dict):
+        normalized["delta"] = _normalize_stream_delta(delta)
+    else:
+        normalized["delta"] = {}
+    normalized.setdefault("index", 0)
+    normalized.setdefault("finish_reason", None)
+    return normalized
+
+
+def _normalize_stream_delta(delta: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(delta)
+    if "message" in normalized and isinstance(normalized["message"], dict):
+        normalized.update(normalized.pop("message"))
+    if "content" in normalized and normalized["content"] is None:
+        normalized.pop("content")
+    if "tool_calls" in normalized:
+        normalized["tool_calls"] = [
+            _normalize_stream_tool_call(index, call)
+            for index, call in enumerate(normalized.get("tool_calls") or [])
+            if isinstance(call, dict)
+        ]
+    return normalized
+
+
+def _normalize_stream_tool_call(index: int, call: dict[str, Any]) -> dict[str, Any]:
+    function = call.get("function") or {}
+    return {
+        "index": call.get("index", index),
+        "id": call.get("id") or f"call_{uuid.uuid4().hex[:24]}",
+        "type": call.get("type", "function"),
+        "function": {
+            "name": function.get("name"),
+            "arguments": function.get("arguments", ""),
+        },
+    }
+
+
+def _chat_stream_chunk(
+    stream_id: str,
+    created: int,
+    model_id: str,
+    delta: dict[str, Any],
+    *,
+    finish_reason: str | None,
+) -> dict[str, Any]:
+    return {
+        "id": stream_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model_id,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+    }
+
+
 def _chat_to_response(chat_response: dict[str, Any], request: ResponseRequest, model_id: str) -> dict[str, Any]:
     choice = chat_response["choices"][0]
     message = choice["message"]
@@ -365,6 +523,9 @@ def _sse(chunks: Any) -> StreamingResponse:
 
 def _responses_stream(chunks: Any, model_id: str) -> Iterable[dict[str, Any]]:
     response_id = f"resp_{uuid.uuid4().hex}"
+    output: list[dict[str, Any]] = []
+    text_item_id: str | None = None
+    tool_items: dict[int, dict[str, Any]] = {}
     yield {
         "type": "response.created",
         "response": {
@@ -377,16 +538,85 @@ def _responses_stream(chunks: Any, model_id: str) -> Iterable[dict[str, Any]]:
         },
     }
     for chunk in chunks:
-        delta = ""
         choices = chunk.get("choices", []) if isinstance(chunk, dict) else []
-        if choices:
-            delta = choices[0].get("delta", {}).get("content") or choices[0].get("text", "")
-        if delta:
-            yield {
-                "type": "response.output_text.delta",
-                "response_id": response_id,
-                "delta": delta,
-            }
+        for choice in choices:
+            delta = choice.get("delta", {})
+            content_delta = delta.get("content") or choice.get("text", "")
+            if content_delta:
+                if text_item_id is None:
+                    text_item_id = f"msg_{uuid.uuid4().hex}"
+                    output.append(
+                        {
+                            "type": "message",
+                            "id": text_item_id,
+                            "status": "in_progress",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "", "annotations": []}],
+                        }
+                    )
+                    yield {
+                        "type": "response.output_item.added",
+                        "response_id": response_id,
+                        "output_index": len(output) - 1,
+                        "item": output[-1],
+                    }
+                output[-1]["content"][0]["text"] += content_delta
+                yield {"type": "response.output_text.delta", "response_id": response_id, "delta": content_delta}
+
+            for tool_call in delta.get("tool_calls") or []:
+                index = int(tool_call.get("index", len(tool_items)))
+                function = tool_call.get("function", {})
+                if index not in tool_items:
+                    call_id = tool_call.get("id") or f"call_{uuid.uuid4().hex[:24]}"
+                    item = {
+                        "type": "function_call",
+                        "id": call_id,
+                        "call_id": call_id,
+                        "name": function.get("name") or "",
+                        "arguments": "",
+                        "status": "in_progress",
+                    }
+                    tool_items[index] = item
+                    output.append(item)
+                    yield {
+                        "type": "response.output_item.added",
+                        "response_id": response_id,
+                        "output_index": len(output) - 1,
+                        "item": item,
+                    }
+                item = tool_items[index]
+                if function.get("name"):
+                    item["name"] = function["name"]
+                arguments_delta = function.get("arguments") or ""
+                if arguments_delta:
+                    item["arguments"] += arguments_delta
+                    yield {
+                        "type": "response.function_call_arguments.delta",
+                        "response_id": response_id,
+                        "item_id": item["id"],
+                        "output_index": output.index(item),
+                        "delta": arguments_delta,
+                    }
+
+            if choice.get("finish_reason") == "tool_calls":
+                for item in tool_items.values():
+                    item["status"] = "completed"
+                    yield {
+                        "type": "response.output_item.done",
+                        "response_id": response_id,
+                        "output_index": output.index(item),
+                        "item": item,
+                    }
+            elif choice.get("finish_reason") == "stop" and text_item_id and output:
+                output[-1]["status"] = "completed"
+                yield {
+                    "type": "response.output_item.done",
+                    "response_id": response_id,
+                    "output_index": len(output) - 1,
+                    "item": output[-1],
+                }
+    for item in output:
+        item["status"] = "completed"
     yield {
         "type": "response.completed",
         "response": {
@@ -395,6 +625,6 @@ def _responses_stream(chunks: Any, model_id: str) -> Iterable[dict[str, Any]]:
             "created_at": int(time.time()),
             "status": "completed",
             "model": model_id,
-            "output": [],
+            "output": output,
         },
     }
