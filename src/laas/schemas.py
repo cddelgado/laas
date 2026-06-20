@@ -38,6 +38,7 @@ class LoadModelRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
     filename: str | None = None
+    download_if_missing: bool = True
 
 
 class ChatMessage(BaseModel):
@@ -117,6 +118,7 @@ class SettingsPatch(BaseModel):
     hf_repo_id: str | None = None
     hf_filename: str | None = None
     auto_load: bool | None = None
+    auto_download: bool | None = None
     n_ctx: int | None = Field(default=None, gt=0)
     n_gpu_layers: int | None = None
     n_threads: int | None = Field(default=None, gt=0)

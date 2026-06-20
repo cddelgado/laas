@@ -11,19 +11,21 @@ from laas.manager import ModelManager
 from laas.settings import Settings, default_model_dir
 
 
-def make_client(tmp_path: Path) -> TestClient:
+def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
     settings = Settings(
         model_dir=tmp_path,
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
+        auto_download=auto_download,
     )
 
     def backend_factory(model_path: Path, active_settings: Settings) -> EchoBackend:
         return EchoBackend()
 
     manager = ModelManager(settings, backend_factory=backend_factory)
-    (settings.model_path.parent).mkdir(parents=True, exist_ok=True)
-    settings.model_path.write_bytes(b"test-model")
+    if write_model:
+        (settings.model_path.parent).mkdir(parents=True, exist_ok=True)
+        settings.model_path.write_bytes(b"test-model")
     return TestClient(create_app(settings=settings, manager=manager))
 
 
@@ -133,6 +135,52 @@ def test_patch_model_directory_setting(tmp_path: Path) -> None:
     target = tmp_path / "models"
     response = client.patch("/v1/local/settings", json={"model_dir": str(target)}).json()
     assert response["model_dir"] == str(target)
+
+
+def test_missing_model_requires_manual_download_or_auto_download(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path, write_model=False)
+
+    load_response = client.post("/v1/local/models/load", json={"download_if_missing": False})
+    assert load_response.status_code == 409
+    assert load_response.json()["detail"]["error"]["code"] == "model_not_downloaded"
+
+    chat_response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert chat_response.status_code == 409
+    assert chat_response.json()["detail"]["error"]["code"] == "model_not_downloaded"
+
+
+def test_load_downloads_missing_model_when_allowed(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path, write_model=False)
+    downloaded_path = tmp_path / "downloaded.gguf"
+
+    def fake_download(*args, **kwargs):
+        downloaded_path.write_bytes(b"downloaded")
+        return downloaded_path
+
+    monkeypatch.setattr("laas.manager.hf_hub_download", fake_download)
+    response = client.post("/v1/local/models/load", json={})
+    assert response.status_code == 200
+    assert response.json()["is_loaded"] is True
+
+
+def test_inference_auto_downloads_when_enabled(tmp_path: Path, monkeypatch) -> None:
+    client = make_client(tmp_path, write_model=False, auto_download=True)
+    downloaded_path = tmp_path / "downloaded.gguf"
+
+    def fake_download(*args, **kwargs):
+        downloaded_path.write_bytes(b"downloaded")
+        return downloaded_path
+
+    monkeypatch.setattr("laas.manager.hf_hub_download", fake_download)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "hello"
 
 
 def test_default_model_dir_is_platform_specific(monkeypatch) -> None:

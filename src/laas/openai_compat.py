@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from .errors import openai_error
-from .manager import ModelManager
+from .manager import ModelManager, ModelNotDownloadedError
 from .multimodal import normalize_chat_messages, normalize_content_parts
 from .schemas import ChatCompletionRequest, CompletionRequest, ModelList, OpenAIModel, ResponseRequest
 from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup
@@ -42,7 +42,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
         _validate_capabilities(request, manager)
         messages = normalize_chat_messages([message.model_dump(exclude_none=True) for message in request.messages])
         tools = normalize_tools_for_responses(request.tools)
-        backend = manager.backend
+        backend = _get_backend(manager)
         result = backend.chat_completion(
             messages=messages,
             model=manager.settings.model_id,
@@ -61,7 +61,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
     def create_completion(request: CompletionRequest) -> Any:
         _assert_model(request.model, manager)
         prompt = request.prompt[0] if isinstance(request.prompt, list) else request.prompt
-        result = manager.backend.completion(
+        result = _get_backend(manager).completion(
             prompt=prompt,
             model=manager.settings.model_id,
             temperature=request.temperature,
@@ -88,7 +88,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             tool_choice=request.tool_choice,
         )
         _validate_capabilities(chat_request, manager)
-        result = manager.backend.chat_completion(
+        result = _get_backend(manager).chat_completion(
             messages=normalize_chat_messages([message.model_dump(exclude_none=True) for message in chat_request.messages]),
             model=manager.settings.model_id,
             tools=chat_request.tools,
@@ -114,6 +114,21 @@ def _assert_model(requested_model: str | None, manager: ModelManager) -> None:
             param="model",
             code="model_not_found",
         )
+
+
+def _get_backend(manager: ModelManager):
+    try:
+        return manager.backend
+    except ModelNotDownloadedError as exc:
+        raise openai_error(
+            409,
+            "The configured model is not downloaded. Call POST /v1/local/models/download and "
+            "POST /v1/local/models/load before inference, or set LAAS_AUTO_DOWNLOAD=true to allow "
+            "LAAS to download missing model files during load.",
+            type_="invalid_request_error",
+            param="model",
+            code="model_not_downloaded",
+        ) from exc
 
 
 def _validate_capabilities(request: ChatCompletionRequest, manager: ModelManager) -> None:

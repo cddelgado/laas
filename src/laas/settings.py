@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     hf_repo_id: str = "ggml-org/gemma-4-E4B-it-GGUF"
     hf_filename: str = "gemma-4-E4B-it-Q4_K_M.gguf"
     auto_load: bool = False
+    auto_download: bool = False
     n_ctx: int = 32768
     n_gpu_layers: int = -1
     n_threads: int | None = None
@@ -53,6 +54,7 @@ class Settings(BaseSettings):
             "hf_repo_id": self.hf_repo_id,
             "hf_filename": self.hf_filename,
             "auto_load": self.auto_load,
+            "auto_download": self.auto_download,
             "n_ctx": self.n_ctx,
             "n_gpu_layers": self.n_gpu_layers,
             "n_threads": self.n_threads,

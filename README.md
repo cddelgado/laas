@@ -110,6 +110,7 @@ The default Gemma model settings are:
 LAAS_MODEL_ID=gemma-4-e4b-it-q4_k_m
 LAAS_HF_REPO_ID=ggml-org/gemma-4-E4B-it-GGUF
 LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
+LAAS_AUTO_DOWNLOAD=false
 ```
 
 ## Run
@@ -159,6 +160,13 @@ Direct uvicorn alternative for any platform:
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000
 ```
 
+Start the server first, then use another terminal to check whether the model is
+already present:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/models/status
+```
+
 Download and load the model:
 
 ```powershell
@@ -184,9 +192,14 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/load \
 ```
 
 If you skip the explicit download step, `POST /v1/local/models/load` downloads
-the configured model when the file is missing. If `LAAS_AUTO_LOAD=true`, the
-same download-then-load path runs when the server starts. With the default
-`LAAS_AUTO_LOAD=false`, server startup does not download a model.
+the configured model when the file is missing. Inference requests do not trigger
+a model download by default. If the model is missing, inference returns
+`model_not_downloaded` with instructions to call the local download/load
+endpoints.
+
+Set `LAAS_AUTO_DOWNLOAD=true` only if you want LAAS to download a missing model
+during auto-load or first inference. With the default `LAAS_AUTO_DOWNLOAD=false`,
+downloads happen only after an explicit local download/load request.
 
 Unload it when you are done:
 

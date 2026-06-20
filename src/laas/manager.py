@@ -14,6 +14,12 @@ from .settings import Settings
 BackendFactory = Callable[[Path, Settings], InferenceBackend]
 
 
+class ModelNotDownloadedError(RuntimeError):
+    def __init__(self, model_path: Path) -> None:
+        self.model_path = model_path
+        super().__init__(f"model file is not downloaded: {model_path}")
+
+
 class ModelManager:
     def __init__(self, settings: Settings, backend_factory: BackendFactory | None = None) -> None:
         self.settings = settings
@@ -37,7 +43,7 @@ class ModelManager:
         with self._lock:
             self._unload_if_idle_locked()
             if self._backend is None:
-                self.load()
+                self.load(download_if_missing=self.settings.auto_download)
             assert self._backend is not None
             self._last_used_at = time.time()
             return self._backend
@@ -75,6 +81,7 @@ class ModelManager:
         model_id: str | None = None,
         hf_repo_id: str | None = None,
         filename: str | None = None,
+        download_if_missing: bool = True,
     ) -> LocalModelStatus:
         with self._lock:
             desired_model = model_id or self.settings.model_id
@@ -92,6 +99,8 @@ class ModelManager:
 
             model_path = self.settings.model_path
             if not model_path.exists():
+                if not download_if_missing:
+                    raise ModelNotDownloadedError(model_path)
                 model_path = self.download(hf_repo_id=hf_repo_id, filename=filename)
 
             self._backend = self._backend_factory(model_path, self.settings)

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from .errors import openai_error
-from .manager import ModelManager
+from .manager import ModelManager, ModelNotDownloadedError
 from .openai_compat import build_openai_router
 from .schemas import DownloadModelRequest, LoadModelRequest, SettingsPatch
 from .settings import Settings, load_settings, save_settings
@@ -19,7 +19,10 @@ def create_app(settings: Settings | None = None, manager: ModelManager | None = 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if active_settings.auto_load:
-            active_manager.load()
+            try:
+                active_manager.load(download_if_missing=active_settings.auto_download)
+            except ModelNotDownloadedError:
+                pass
         yield
 
     app = FastAPI(
@@ -69,7 +72,17 @@ def create_app(settings: Settings | None = None, manager: ModelManager | None = 
                 model_id=request.model_id,
                 hf_repo_id=request.hf_repo_id,
                 filename=request.filename,
+                download_if_missing=request.download_if_missing,
             ).model_dump()
+        except ModelNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured model is not downloaded. Call POST /v1/local/models/download first, "
+                "or retry /v1/local/models/load with download_if_missing=true.",
+                type_="invalid_request_error",
+                param="model",
+                code="model_not_downloaded",
+            ) from exc
         except RuntimeError as exc:
             raise openai_error(503, str(exc), type_="server_error", code="backend_missing") from exc
 

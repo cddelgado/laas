@@ -264,6 +264,7 @@ LAAS_MODEL_ID=gemma-4-e4b-it-q4_k_m
 LAAS_HF_REPO_ID=ggml-org/gemma-4-E4B-it-GGUF
 LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
 LAAS_AUTO_LOAD=false
+LAAS_AUTO_DOWNLOAD=false
 LAAS_IDLE_UNLOAD_SECONDS=900
 ```
 
@@ -275,6 +276,7 @@ LAAS_MODEL_ID=gemma-4-e4b-it-q4_k_m
 LAAS_HF_REPO_ID=ggml-org/gemma-4-E4B-it-GGUF
 LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
 LAAS_AUTO_LOAD=false
+LAAS_AUTO_DOWNLOAD=false
 LAAS_IDLE_UNLOAD_SECONDS=900
 ```
 
@@ -286,14 +288,33 @@ The model is downloaded when either:
 
 - `POST /v1/local/models/download` is called.
 - `POST /v1/local/models/load` is called and the configured model file is
-  missing.
-- The server starts with `LAAS_AUTO_LOAD=true` and the configured model file is
-  missing.
+  missing, unless the request body sets `download_if_missing=false`.
+- The server starts with `LAAS_AUTO_LOAD=true`, the configured model file is
+  missing, and `LAAS_AUTO_DOWNLOAD=true`.
 - An inference endpoint is called while the model is unloaded; LAAS attempts to
-  load the model, and that load path downloads the file if it is missing.
+  load the model, and that load path downloads the file only when
+  `LAAS_AUTO_DOWNLOAD=true`.
 
-By default, `LAAS_AUTO_LOAD=false`. Starting the API does not download or load
-the model until you explicitly ask it to or send an inference request.
+By default, `LAAS_AUTO_LOAD=false` and `LAAS_AUTO_DOWNLOAD=false`. Starting the
+API does not download or load the model until you explicitly ask it to.
+Inference requests return `model_not_downloaded` when the model file is missing.
+
+Check status first:
+
+Windows PowerShell:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/models/status
+```
+
+macOS/Linux:
+
+```bash
+curl http://127.0.0.1:8000/v1/local/models/status
+```
+
+Manual download is the confirmation step. Run it only after you are ready for
+LAAS to fetch the configured GGUF into `LAAS_MODEL_DIR`.
 
 Windows PowerShell:
 
@@ -307,6 +328,14 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/load `
   -Body "{}"
 ```
 
+To require a previous download and fail instead of downloading during load:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/load `
+  -ContentType "application/json" `
+  -Body '{"download_if_missing": false}'
+```
+
 macOS/Linux:
 
 ```bash
@@ -317,6 +346,20 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/download \
 curl -X POST http://127.0.0.1:8000/v1/local/models/load \
   -H "Content-Type: application/json" \
   -d "{}"
+```
+
+To require a previous download and fail instead of downloading during load:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/local/models/load \
+  -H "Content-Type: application/json" \
+  -d '{"download_if_missing": false}'
+```
+
+To opt into missing-model downloads during startup auto-load or first inference:
+
+```text
+LAAS_AUTO_DOWNLOAD=true
 ```
 
 ## 7. Run
