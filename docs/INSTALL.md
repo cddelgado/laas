@@ -415,6 +415,27 @@ Development reload mode:
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+When launched through `laas`, startup checks the configured model path before
+the server starts. If the model file is missing, LAAS prints the model id,
+Hugging Face repo, filename, and target path, then asks whether to download it.
+Answer `y` or `yes` to confirm the download.
+
+To download without prompting:
+
+```bash
+laas --yes-download
+```
+
+To skip the startup prompt:
+
+```bash
+laas --no-download-prompt
+```
+
+Direct `uvicorn` launches do not ask interactive questions. They are intended
+for service/process-manager use. Use `/v1/local/models/status` and
+`/v1/local/models/download` for manual control in that mode.
+
 ## 8. Verify
 
 Windows PowerShell:

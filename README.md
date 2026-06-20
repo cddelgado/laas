@@ -160,14 +160,35 @@ Direct uvicorn alternative for any platform:
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000
 ```
 
-Start the server first, then use another terminal to check whether the model is
-already present:
+When launched through `laas`, startup checks the configured model path before
+the server starts. If the model file is missing, LAAS prints the model id,
+Hugging Face repo, filename, and target path, then asks whether to download it.
+
+To confirm from the prompt, answer `y` or `yes`.
+
+To download without prompting:
+
+```powershell
+laas --yes-download
+```
+
+To skip the startup prompt:
+
+```powershell
+laas --no-download-prompt
+```
+
+Direct `uvicorn` launches do not ask interactive questions. They are intended
+for service/process-manager use.
+
+After the server starts, use another terminal to check whether the model is
+present:
 
 ```powershell
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/models/status
 ```
 
-Download and load the model:
+Manual download and load:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/models/download `
