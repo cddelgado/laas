@@ -1,0 +1,2 @@
+-r requirements-tts.txt
+pywhispercpp>=1.5.0

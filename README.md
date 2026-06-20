@@ -23,6 +23,14 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/audio/download`
 - `POST /v1/local/audio/load`
 - `POST /v1/local/audio/unload`
+- `GET /v1/local/transcription/status`
+- `POST /v1/local/transcription/download`
+- `POST /v1/local/transcription/load`
+- `POST /v1/local/transcription/unload`
+- `GET /v1/local/voice/status`
+- `POST /v1/local/voice/download`
+- `POST /v1/local/voice/load`
+- `POST /v1/local/voice/unload`
 - `GET /v1/local/capabilities`
 
 The OpenAI-compatible endpoints accept OpenAI-style text, tool calls, image
@@ -80,19 +88,19 @@ Use the wheel index that matches your machine. The upstream `llama-cpp-python`
 project documents the current pre-built wheel indexes at
 <https://github.com/abetlen/llama-cpp-python#supported-backends>.
 
-For Kokoro text-to-speech:
+For the full local voice stack, Kokoro TTS plus whisper.cpp STT:
 
 ```bash
-python -m pip install -r requirements-tts.txt
+python -m pip install -r requirements-voice.txt
 ```
 
 On Windows PowerShell:
 
 ```powershell
-python -m pip install -r requirements-tts.txt
+python -m pip install -r requirements-voice.txt
 ```
 
-The equivalent `pyproject.toml` extra is `python -m pip install -e ".[tts]"`.
+The equivalent `pyproject.toml` extra is `python -m pip install -e ".[voice]"`.
 
 ## Configure
 
@@ -146,6 +154,12 @@ LAAS_TTS_DEFAULT_VOICE=af_heart
 LAAS_TTS_DEFAULT_LANG=en-us
 LAAS_TTS_AUTO_DOWNLOAD=false
 LAAS_TTS_FFMPEG_PATH=ffmpeg
+LAAS_STT_MODEL_ID=whisper-small
+LAAS_STT_HF_REPO_ID=ggerganov/whisper.cpp
+LAAS_STT_MODEL_FILENAME=ggml-small.bin
+LAAS_STT_AUTO_DOWNLOAD=false
+LAAS_VOICE_AUTO_LOAD=false
+LAAS_VOICE_AUTO_DOWNLOAD=false
 ```
 
 ## Run
@@ -278,16 +292,17 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/unload
 LAAS also unloads the active model after `LAAS_IDLE_UNLOAD_SECONDS` seconds of
 inactivity. Set it to `0` to disable idle unloading.
 
-## Kokoro Text-to-Speech
+## Local Voice Stack
 
-Install the TTS extra, start `laas`, then download and load Kokoro:
+Install the voice extra, start `laas`, then download and load Kokoro plus
+Whisper small together:
 
 ```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/audio/download `
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/voice/download `
   -ContentType "application/json" `
   -Body "{}"
 
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/audio/load `
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/voice/load `
   -ContentType "application/json" `
   -Body "{}"
 ```
@@ -312,11 +327,11 @@ Invoke-WebRequest -Method Post -Uri http://127.0.0.1:8000/v1/audio/speech `
 macOS/Linux:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/local/audio/download \
+curl -X POST http://127.0.0.1:8000/v1/local/voice/download \
   -H "Content-Type: application/json" \
   -d "{}"
 
-curl -X POST http://127.0.0.1:8000/v1/local/audio/load \
+curl -X POST http://127.0.0.1:8000/v1/local/voice/load \
   -H "Content-Type: application/json" \
   -d "{}"
 
@@ -349,14 +364,42 @@ If `ffmpeg` is not on `PATH`, set `LAAS_TTS_FFMPEG_PATH` to the executable. The
 audio status endpoint reports `supported_formats`, `ffmpeg_path`, and
 `ffmpeg_available` so clients can decide which formats to request.
 
-Unload Kokoro when you are done:
+Transcribe the generated file with the OpenAI-compatible transcription endpoint.
+This Python example works on Windows, macOS, and Linux:
 
-```powershell
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/audio/unload
+```python
+from pathlib import Path
+
+import requests
+
+audio_path = Path("kokoro.wav")
+with audio_path.open("rb") as fh:
+    response = requests.post(
+        "http://127.0.0.1:8000/v1/audio/transcriptions",
+        data={
+            "model": "whisper-1",
+            "response_format": "verbose_json",
+            "language": "en",
+        },
+        files={"file": (audio_path.name, fh, "audio/wav")},
+    )
+response.raise_for_status()
+print(response.json()["text"])
 ```
 
-Kokoro also unloads after `LAAS_TTS_IDLE_UNLOAD_SECONDS` seconds of inactivity.
-Set it to `0` to disable TTS idle unloading.
+`POST /v1/audio/translations` accepts the same multipart upload shape and asks
+Whisper to translate speech to English. Supported transcription response formats
+are `json`, `text`, `srt`, `verbose_json`, and `vtt`.
+
+Unload the full voice stack when you are done:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/voice/unload
+```
+
+Kokoro unloads after `LAAS_TTS_IDLE_UNLOAD_SECONDS` seconds of inactivity.
+Whisper unloads after `LAAS_STT_IDLE_UNLOAD_SECONDS` seconds. Set either to `0`
+to disable idle unloading for that side of the voice stack.
 
 ## Use With OpenAI Clients
 

@@ -11,6 +11,13 @@ from laas.manager import ModelManager
 from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
 from laas.settings import Settings, default_model_dir
 from laas.tools import parse_tool_calls, remove_tool_call_markup
+from laas.transcription import (
+    TranscriptionBackend,
+    TranscriptionManager,
+    TranscriptionResult,
+    TranscriptionSegment,
+    transcription_to_response,
+)
 from laas.tts import AudioBackend, AudioEncoderMissingError, AudioManager, SynthesizedSpeech, encode_audio, resolve_voice
 
 
@@ -64,6 +71,25 @@ class FakeAudioBackend(AudioBackend):
         self.closed = True
 
 
+class FakeTranscriptionBackend(TranscriptionBackend):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def transcribe(self, **kwargs) -> TranscriptionResult:
+        self.calls.append(kwargs)
+        assert Path(kwargs["media_path"]).exists()
+        return TranscriptionResult(
+            text="hello from whisper",
+            language=kwargs.get("language") or "en",
+            duration=1.25,
+            segments=[TranscriptionSegment(id=0, start=0.0, end=1.25, text="hello from whisper")],
+        )
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def make_audio_client(
     tmp_path: Path,
     *,
@@ -93,6 +119,52 @@ def make_audio_client(
 
     client = TestClient(create_app(settings=settings, manager=text_manager, audio_manager=audio_manager))
     return client, backend
+
+
+def make_voice_client(
+    tmp_path: Path,
+    *,
+    write_audio_assets: bool = True,
+    write_transcription_model: bool = True,
+) -> tuple[TestClient, FakeAudioBackend, FakeTranscriptionBackend]:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        tts_idle_unload_seconds=0,
+        stt_idle_unload_seconds=0,
+        tts_voices_filename="voices.json",
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    audio_backend = FakeAudioBackend()
+    transcription_backend = FakeTranscriptionBackend()
+    audio_manager = AudioManager(settings, backend_factory=lambda model_path, voices_path, active_settings: audio_backend)
+    transcription_manager = TranscriptionManager(
+        settings,
+        backend_factory=lambda model_path, active_settings: transcription_backend,
+    )
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    if write_audio_assets:
+        settings.tts_model_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.tts_model_path.write_bytes(b"tts-model")
+        settings.tts_voices_path.write_text('{"af": [], "af_alloy": []}', encoding="utf-8")
+    if write_transcription_model:
+        settings.stt_model_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.stt_model_path.write_bytes(b"stt-model")
+
+    client = TestClient(
+        create_app(
+            settings=settings,
+            manager=text_manager,
+            audio_manager=audio_manager,
+            transcription_manager=transcription_manager,
+        )
+    )
+    return client, audio_backend, transcription_backend
 
 
 def test_models_and_local_status(tmp_path: Path) -> None:
@@ -399,6 +471,87 @@ def test_audio_encode_reports_missing_ffmpeg() -> None:
 def test_openai_voice_aliases_map_to_kokoro_ids() -> None:
     assert resolve_voice("alloy") == "af_alloy"
     assert resolve_voice("af_heart") == "af_heart"
+
+
+def test_transcription_endpoint_accepts_file_and_returns_verbose_json(tmp_path: Path) -> None:
+    client, _audio_backend, transcription_backend = make_voice_client(tmp_path)
+
+    loaded = client.post("/v1/local/transcription/load", json={}).json()
+    assert loaded["is_loaded"] is True
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "whisper-1",
+            "language": "en",
+            "prompt": "domain words",
+            "response_format": "verbose_json",
+            "temperature": "0",
+        },
+        files={"file": ("sample.wav", b"fake audio bytes", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task"] == "transcribe"
+    assert payload["text"] == "hello from whisper"
+    assert payload["segments"][0]["start"] == 0.0
+    assert transcription_backend.calls[0]["language"] == "en"
+    assert transcription_backend.calls[0]["prompt"] == "domain words"
+    assert transcription_backend.calls[0]["translate"] is False
+
+
+def test_translation_endpoint_and_text_output(tmp_path: Path) -> None:
+    client, _audio_backend, transcription_backend = make_voice_client(tmp_path)
+
+    response = client.post(
+        "/v1/audio/translations",
+        data={"model": "whisper-1", "response_format": "text"},
+        files={"file": ("sample.wav", b"fake audio bytes", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.text == "hello from whisper"
+    assert transcription_backend.calls[0]["translate"] is True
+
+
+def test_transcription_srt_and_vtt_formatting() -> None:
+    result = TranscriptionResult(
+        text="hello",
+        language="en",
+        duration=1.25,
+        segments=[TranscriptionSegment(id=0, start=0.0, end=1.25, text="hello")],
+    )
+
+    assert "00:00:00,000 --> 00:00:01,250" in transcription_to_response(result, "srt", task="transcribe")
+    assert "WEBVTT" in transcription_to_response(result, "vtt", task="transcribe")
+    assert "00:00:00.000 --> 00:00:01.250" in transcription_to_response(result, "vtt", task="transcribe")
+
+
+def test_transcription_missing_model_requires_download(tmp_path: Path) -> None:
+    client, _audio_backend, _transcription_backend = make_voice_client(tmp_path, write_transcription_model=False)
+
+    response = client.post("/v1/local/transcription/load", json={"download_if_missing": False})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"]["code"] == "transcription_not_downloaded"
+
+
+def test_voice_stack_loads_and_unloads_tts_and_transcription(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+
+    loaded = client.post("/v1/local/voice/load", json={}).json()
+    assert loaded["is_loaded"] is True
+    assert loaded["tts"]["is_loaded"] is True
+    assert loaded["transcription"]["is_loaded"] is True
+
+    status = client.get("/v1/local/voice/status").json()
+    assert status["is_loaded"] is True
+
+    unloaded = client.post("/v1/local/voice/unload", json={}).json()
+    assert unloaded["is_loaded"] is False
+    assert audio_backend.closed is True
+    assert transcription_backend.closed is True
 
 
 def test_patch_model_directory_setting(tmp_path: Path) -> None:

@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     tts_auto_download: bool = False
     tts_idle_unload_seconds: int = 900
     tts_ffmpeg_path: str = "ffmpeg"
+    stt_model_id: str = "whisper-small"
+    stt_hf_repo_id: str = "ggerganov/whisper.cpp"
+    stt_model_filename: str = "ggml-small.bin"
+    stt_default_language: str | None = None
+    stt_n_threads: int | None = None
+    stt_auto_load: bool = False
+    stt_auto_download: bool = False
+    stt_idle_unload_seconds: int = 900
+    voice_auto_load: bool = False
+    voice_auto_download: bool = False
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @property
@@ -75,6 +85,10 @@ class Settings(BaseSettings):
     @property
     def tts_voices_path(self) -> Path:
         return self.model_dir / self.tts_hf_repo_id.replace("/", "__") / self.tts_voices_filename
+
+    @property
+    def stt_model_path(self) -> Path:
+        return self.model_dir / self.stt_hf_repo_id.replace("/", "__") / self.stt_model_filename
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +117,16 @@ class Settings(BaseSettings):
             "tts_auto_download": self.tts_auto_download,
             "tts_idle_unload_seconds": self.tts_idle_unload_seconds,
             "tts_ffmpeg_path": self.tts_ffmpeg_path,
+            "stt_model_id": self.stt_model_id,
+            "stt_hf_repo_id": self.stt_hf_repo_id,
+            "stt_model_filename": self.stt_model_filename,
+            "stt_default_language": self.stt_default_language,
+            "stt_n_threads": self.stt_n_threads,
+            "stt_auto_load": self.stt_auto_load,
+            "stt_auto_download": self.stt_auto_download,
+            "stt_idle_unload_seconds": self.stt_idle_unload_seconds,
+            "voice_auto_load": self.voice_auto_load,
+            "voice_auto_download": self.voice_auto_download,
         }
 
 

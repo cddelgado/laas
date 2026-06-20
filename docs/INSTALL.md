@@ -236,25 +236,24 @@ or:
 python -m pip install -e ".[video]"
 ```
 
-## 5. Optional Kokoro Text-to-Speech
+## 5. Optional Local Voice Stack
 
-Kokoro TTS uses the `kokoro-onnx` package and downloads its ONNX model and
-voice bundle through Hugging Face:
+The full local voice stack uses Kokoro TTS plus whisper.cpp STT:
 
 ```bash
-python -m pip install -r requirements-tts.txt
+python -m pip install -r requirements-voice.txt
 ```
 
 PowerShell:
 
 ```powershell
-python -m pip install -r requirements-tts.txt
+python -m pip install -r requirements-voice.txt
 ```
 
 Equivalent `pyproject.toml` extra:
 
 ```bash
-python -m pip install -e ".[tts]"
+python -m pip install -e ".[voice]"
 ```
 
 Default assets:
@@ -263,6 +262,8 @@ Default assets:
 LAAS_TTS_HF_REPO_ID=fastrtc/kokoro-onnx
 LAAS_TTS_MODEL_FILENAME=kokoro-v1.0.onnx
 LAAS_TTS_VOICES_FILENAME=voices-v1.0.bin
+LAAS_STT_HF_REPO_ID=ggerganov/whisper.cpp
+LAAS_STT_MODEL_FILENAME=ggml-small.bin
 ```
 
 These files use the same `LAAS_MODEL_DIR` root as the GGUF model.
@@ -335,6 +336,15 @@ LAAS_TTS_AUTO_LOAD=false
 LAAS_TTS_AUTO_DOWNLOAD=false
 LAAS_TTS_IDLE_UNLOAD_SECONDS=900
 LAAS_TTS_FFMPEG_PATH=ffmpeg
+LAAS_STT_MODEL_ID=whisper-small
+LAAS_STT_HF_REPO_ID=ggerganov/whisper.cpp
+LAAS_STT_MODEL_FILENAME=ggml-small.bin
+LAAS_STT_DEFAULT_LANGUAGE=
+LAAS_STT_AUTO_LOAD=false
+LAAS_STT_AUTO_DOWNLOAD=false
+LAAS_STT_IDLE_UNLOAD_SECONDS=900
+LAAS_VOICE_AUTO_LOAD=false
+LAAS_VOICE_AUTO_DOWNLOAD=false
 ```
 
 macOS/Linux `.env` example:
@@ -358,6 +368,15 @@ LAAS_TTS_AUTO_LOAD=false
 LAAS_TTS_AUTO_DOWNLOAD=false
 LAAS_TTS_IDLE_UNLOAD_SECONDS=900
 LAAS_TTS_FFMPEG_PATH=ffmpeg
+LAAS_STT_MODEL_ID=whisper-small
+LAAS_STT_HF_REPO_ID=ggerganov/whisper.cpp
+LAAS_STT_MODEL_FILENAME=ggml-small.bin
+LAAS_STT_DEFAULT_LANGUAGE=
+LAAS_STT_AUTO_LOAD=false
+LAAS_STT_AUTO_DOWNLOAD=false
+LAAS_STT_IDLE_UNLOAD_SECONDS=900
+LAAS_VOICE_AUTO_LOAD=false
+LAAS_VOICE_AUTO_DOWNLOAD=false
 ```
 
 ## 7. Download/Load Behavior

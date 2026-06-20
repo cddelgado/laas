@@ -48,6 +48,24 @@ class LocalAudioStatus(BaseModel):
     last_used_at: float | None = None
 
 
+class LocalTranscriptionStatus(BaseModel):
+    configured_model: str
+    loaded_model: str | None
+    is_loaded: bool
+    model_path: str
+    downloaded: bool
+    default_language: str | None = None
+    n_threads: int | None = None
+    idle_unload_seconds: int
+    last_used_at: float | None = None
+
+
+class LocalVoiceStackStatus(BaseModel):
+    tts: LocalAudioStatus
+    transcription: LocalTranscriptionStatus
+    is_loaded: bool
+
+
 class DownloadAudioRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
@@ -60,6 +78,23 @@ class LoadAudioRequest(BaseModel):
     hf_repo_id: str | None = None
     model_filename: str | None = None
     voices_filename: str | None = None
+    download_if_missing: bool = True
+
+
+class DownloadTranscriptionRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+    filename: str | None = None
+
+
+class LoadTranscriptionRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+    filename: str | None = None
+    download_if_missing: bool = True
+
+
+class LoadVoiceStackRequest(BaseModel):
     download_if_missing: bool = True
 
 
@@ -231,3 +266,13 @@ class SettingsPatch(BaseModel):
     tts_auto_download: bool | None = None
     tts_idle_unload_seconds: int | None = Field(default=None, ge=0)
     tts_ffmpeg_path: str | None = None
+    stt_model_id: str | None = None
+    stt_hf_repo_id: str | None = None
+    stt_model_filename: str | None = None
+    stt_default_language: str | None = None
+    stt_n_threads: int | None = Field(default=None, gt=0)
+    stt_auto_load: bool | None = None
+    stt_auto_download: bool | None = None
+    stt_idle_unload_seconds: int | None = Field(default=None, ge=0)
+    voice_auto_load: bool | None = None
+    voice_auto_download: bool | None = None
