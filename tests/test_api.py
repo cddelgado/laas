@@ -8,7 +8,9 @@ from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
 from laas.manager import ModelManager
+from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
 from laas.settings import Settings, default_model_dir
+from laas.tools import parse_tool_calls, remove_tool_call_markup
 
 
 def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
@@ -29,6 +31,20 @@ def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool
         if settings.mmproj_path:
             settings.mmproj_path.write_bytes(b"test-mmproj")
     return TestClient(create_app(settings=settings, manager=manager))
+
+
+class CapturingBackend(EchoBackend):
+    def __init__(self) -> None:
+        self.chat_params: dict[str, object] = {}
+        self.completion_params: dict[str, object] = {}
+
+    def chat_completion(self, **kwargs):
+        self.chat_params = kwargs.get("extra_params") or {}
+        return super().chat_completion(**kwargs)
+
+    def completion(self, **kwargs):
+        self.completion_params = kwargs.get("extra_params") or {}
+        return super().completion(**kwargs)
 
 
 def test_models_and_local_status(tmp_path: Path) -> None:
@@ -84,6 +100,115 @@ def test_tool_call_translation(tmp_path: Path) -> None:
     choice = response["choices"][0]
     assert choice["finish_reason"] == "tool_calls"
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def test_chat_completion_sampling_params_are_forwarded(tmp_path: Path) -> None:
+    settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json")
+    backend = CapturingBackend()
+    manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: backend)
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    client = TestClient(create_app(settings=settings, manager=manager))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hello"}],
+            "stop": ["<end>"],
+            "seed": 123,
+            "top_k": 32,
+            "min_p": 0.1,
+            "repeat_penalty": 1.05,
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert backend.chat_params == {
+        "stop": ["<end>"],
+        "seed": 123,
+        "repeat_penalty": 1.05,
+        "top_k": 32,
+        "min_p": 0.1,
+        "response_format": {"type": "json_object"},
+    }
+
+
+def test_completion_sampling_params_are_forwarded(tmp_path: Path) -> None:
+    settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json")
+    backend = CapturingBackend()
+    manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: backend)
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    client = TestClient(create_app(settings=settings, manager=manager))
+
+    response = client.post(
+        "/v1/completions",
+        json={
+            "prompt": "hello",
+            "suffix": "done",
+            "stop": "END",
+            "seed": 456,
+            "top_k": 16,
+            "typical_p": 0.9,
+            "echo": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert backend.completion_params == {
+        "suffix": "done",
+        "stop": "END",
+        "seed": 456,
+        "top_k": 16,
+        "typical_p": 0.9,
+        "echo": True,
+    }
+
+
+def test_responses_sampling_params_are_forwarded(tmp_path: Path) -> None:
+    settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json")
+    backend = CapturingBackend()
+    manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: backend)
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    client = TestClient(create_app(settings=settings, manager=manager))
+
+    response = client.post(
+        "/v1/responses",
+        json={
+            "input": "hello",
+            "stop": "END",
+            "seed": 789,
+            "top_k": 8,
+            "text": {"format": {"type": "json_object"}},
+        },
+    )
+
+    assert response.status_code == 200
+    assert backend.chat_params == {
+        "stop": "END",
+        "seed": 789,
+        "top_k": 8,
+        "response_format": {"type": "json_object"},
+    }
+
+
+def test_gemma_native_tool_call_translation() -> None:
+    text = '<|tool_call>call:get_weather{location:<|"|>Chicago<|"|>}<tool_call|>'
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
+
+    calls = parse_tool_calls(text, tools)
+
+    assert calls[0]["function"]["name"] == "get_weather"
+    assert calls[0]["function"]["arguments"] == '{"location":"Chicago"}'
+    assert remove_tool_call_markup(text) == ""
 
 
 def test_responses_api_text_and_image_parts(tmp_path: Path) -> None:
@@ -259,6 +384,34 @@ def test_backend_mmproj_kwargs_are_mapped(tmp_path: Path) -> None:
     assert kwargs["mmproj"] == str(tmp_path / "mmproj.gguf")
 
 
+def test_backend_mmproj_kwargs_use_gemma4_chat_handler(tmp_path: Path) -> None:
+    class SupportsChatHandler:
+        def __init__(self, model_path: str, chat_handler: object | None = None) -> None:
+            pass
+
+    class FakeGemma4ChatHandler:
+        def __init__(self, clip_model_path: str, verbose: bool, use_gpu: bool) -> None:
+            self.clip_model_path = clip_model_path
+            self.verbose = verbose
+            self.use_gpu = use_gpu
+
+    kwargs = {"model_path": "model.gguf"}
+    _add_mmproj_kwargs(
+        SupportsChatHandler,
+        kwargs,
+        tmp_path / "mmproj.gguf",
+        verbose=True,
+        use_gpu=False,
+        chat_handler_cls=FakeGemma4ChatHandler,
+    )
+
+    handler = kwargs["chat_handler"]
+    assert isinstance(handler, FakeGemma4ChatHandler)
+    assert handler.clip_model_path == str(tmp_path / "mmproj.gguf")
+    assert handler.verbose is True
+    assert handler.use_gpu is False
+
+
 def test_backend_mmproj_kwargs_fail_without_support(tmp_path: Path) -> None:
     class TextOnly:
         def __init__(self, model_path: str) -> None:
@@ -270,3 +423,18 @@ def test_backend_mmproj_kwargs_fail_without_support(tmp_path: Path) -> None:
         assert "multimodal projector" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
+
+
+def test_backend_response_model_paths_are_normalized() -> None:
+    chat = _normalize_chat_response(
+        {"model": r"D:\AI\Models\model.gguf", "choices": [{"message": {"content": "ok"}}]},
+        "gemma-4-e4b-it-q4_k_m",
+        None,
+    )
+    completion = _normalize_completion_response(
+        {"model": r"D:\AI\Models\model.gguf", "choices": [{"text": "ok"}]},
+        "gemma-4-e4b-it-q4_k_m",
+    )
+
+    assert chat["model"] == "gemma-4-e4b-it-q4_k_m"
+    assert completion["model"] == "gemma-4-e4b-it-q4_k_m"

@@ -22,6 +22,7 @@ class InferenceBackend(ABC):
         top_p: float | None,
         max_tokens: int | None,
         stream: bool,
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | Iterable[dict[str, Any]]:
         raise NotImplementedError
 
@@ -35,6 +36,7 @@ class InferenceBackend(ABC):
         top_p: float | None,
         max_tokens: int | None,
         stream: bool,
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | Iterable[dict[str, Any]]:
         raise NotImplementedError
 
@@ -68,7 +70,13 @@ class LlamaCppBackend(InferenceBackend):
         if n_threads:
             kwargs["n_threads"] = n_threads
         if mmproj_path:
-            _add_mmproj_kwargs(Llama, kwargs, mmproj_path)
+            _add_mmproj_kwargs(
+                Llama,
+                kwargs,
+                mmproj_path,
+                verbose=verbose,
+                use_gpu=n_gpu_layers != 0,
+            )
         self._llm = Llama(**kwargs)
 
     def chat_completion(
@@ -82,6 +90,7 @@ class LlamaCppBackend(InferenceBackend):
         top_p: float | None,
         max_tokens: int | None,
         stream: bool,
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | Iterable[dict[str, Any]]:
         kwargs: dict[str, Any] = {
             "messages": messages,
@@ -91,6 +100,7 @@ class LlamaCppBackend(InferenceBackend):
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        kwargs.update(extra_params or {})
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
@@ -105,6 +115,7 @@ class LlamaCppBackend(InferenceBackend):
         top_p: float | None,
         max_tokens: int | None,
         stream: bool,
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | Iterable[dict[str, Any]]:
         kwargs: dict[str, Any] = {
             "prompt": prompt,
@@ -114,6 +125,7 @@ class LlamaCppBackend(InferenceBackend):
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        kwargs.update(extra_params or {})
         return self._llm.create_completion(**kwargs)
 
     def close(self) -> None:
@@ -134,6 +146,7 @@ class EchoBackend(InferenceBackend):
         top_p: float | None,
         max_tokens: int | None,
         stream: bool,
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | Iterable[dict[str, Any]]:
         content = _last_user_text(messages) or "ok"
         if tools and tool_choice not in {"none", None} and "call_tool" in content:
@@ -184,6 +197,7 @@ class EchoBackend(InferenceBackend):
         top_p: float | None,
         max_tokens: int | None,
         stream: bool,
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | Iterable[dict[str, Any]]:
         result = {
             "id": "cmpl_echo",
@@ -224,7 +238,15 @@ def _last_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _add_mmproj_kwargs(llama_cls: Any, kwargs: dict[str, Any], mmproj_path: Path) -> None:
+def _add_mmproj_kwargs(
+    llama_cls: Any,
+    kwargs: dict[str, Any],
+    mmproj_path: Path,
+    *,
+    verbose: bool = False,
+    use_gpu: bool = True,
+    chat_handler_cls: Any | None = None,
+) -> None:
     signature = inspect.signature(llama_cls)
     parameters = signature.parameters
     if "mmproj" in parameters:
@@ -236,9 +258,24 @@ def _add_mmproj_kwargs(llama_cls: Any, kwargs: dict[str, Any], mmproj_path: Path
     if "clip_model_path" in parameters:
         kwargs["clip_model_path"] = str(mmproj_path)
         return
+    if "chat_handler" in parameters:
+        if chat_handler_cls is None:
+            try:
+                from llama_cpp.llama_chat_format import Gemma4ChatHandler as chat_handler_cls
+            except Exception as exc:
+                raise RuntimeError(
+                    "The configured model requires a multimodal projector, but the installed "
+                    "llama-cpp-python package does not expose Gemma4ChatHandler."
+                ) from exc
+        kwargs["chat_handler"] = chat_handler_cls(
+            clip_model_path=str(mmproj_path),
+            verbose=verbose,
+            use_gpu=use_gpu,
+        )
+        return
     raise RuntimeError(
         "The configured model requires a multimodal projector, but the installed "
-        "llama-cpp-python Llama constructor does not expose mmproj/mmproj_path/clip_model_path. "
+        "llama-cpp-python Llama constructor does not expose mmproj/mmproj_path/clip_model_path/chat_handler. "
         "Install a llama-cpp-python build with multimodal projector support or set "
         "LAAS_MMPROJ_REQUIRED=false for text-only use."
     )

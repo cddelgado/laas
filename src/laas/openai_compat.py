@@ -52,6 +52,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             top_p=request.top_p,
             max_tokens=request.requested_max_tokens,
             stream=request.stream,
+            extra_params=_chat_sampling_params(request),
         )
         if request.stream:
             return _sse(result)
@@ -68,10 +69,11 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             top_p=request.top_p,
             max_tokens=request.max_tokens,
             stream=request.stream,
+            extra_params=_completion_sampling_params(request),
         )
         if request.stream:
             return _sse(result)
-        return result
+        return _normalize_completion_response(result, manager.settings.model_id)
 
     @router.post("/responses")
     def create_response(request: ResponseRequest) -> Any:
@@ -86,6 +88,22 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             stream=request.stream,
             tools=normalize_tools_for_responses(request.tools),
             tool_choice=request.tool_choice,
+            response_format=_response_text_format(request.text),
+            stop=request.stop,
+            seed=request.seed,
+            presence_penalty=request.presence_penalty,
+            frequency_penalty=request.frequency_penalty,
+            repeat_penalty=request.repeat_penalty,
+            top_k=request.top_k,
+            min_p=request.min_p,
+            typical_p=request.typical_p,
+            tfs_z=request.tfs_z,
+            mirostat_mode=request.mirostat_mode,
+            mirostat_tau=request.mirostat_tau,
+            mirostat_eta=request.mirostat_eta,
+            logit_bias=request.logit_bias,
+            logprobs=request.logprobs,
+            top_logprobs=request.top_logprobs,
         )
         _validate_capabilities(chat_request, manager)
         result = _get_backend(manager).chat_completion(
@@ -97,6 +115,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             top_p=chat_request.top_p,
             max_tokens=chat_request.requested_max_tokens,
             stream=request.stream,
+            extra_params=_chat_sampling_params(chat_request),
         )
         if request.stream:
             return _sse(_responses_stream(result, manager.settings.model_id))
@@ -148,6 +167,70 @@ def _validate_capabilities(request: ChatCompletionRequest, manager: ModelManager
                 raise openai_error(400, "the loaded model does not support audio inputs", param="messages")
 
 
+def _chat_sampling_params(request: ChatCompletionRequest) -> dict[str, Any]:
+    return _present_params(
+        request,
+        [
+            "stop",
+            "seed",
+            "presence_penalty",
+            "frequency_penalty",
+            "repeat_penalty",
+            "top_k",
+            "min_p",
+            "typical_p",
+            "tfs_z",
+            "mirostat_mode",
+            "mirostat_tau",
+            "mirostat_eta",
+            "response_format",
+            "logit_bias",
+            "logprobs",
+            "top_logprobs",
+        ],
+    )
+
+
+def _completion_sampling_params(request: CompletionRequest) -> dict[str, Any]:
+    return _present_params(
+        request,
+        [
+            "suffix",
+            "stop",
+            "seed",
+            "presence_penalty",
+            "frequency_penalty",
+            "repeat_penalty",
+            "top_k",
+            "min_p",
+            "typical_p",
+            "tfs_z",
+            "mirostat_mode",
+            "mirostat_tau",
+            "mirostat_eta",
+            "logit_bias",
+            "logprobs",
+            "echo",
+        ],
+    )
+
+
+def _present_params(request: Any, fields: list[str]) -> dict[str, Any]:
+    params: dict[str, Any] = {}
+    for field in fields:
+        value = getattr(request, field)
+        if value is not None:
+            params[field] = value
+    return params
+
+
+def _response_text_format(text: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not text:
+        return None
+    response_format = text.get("format", text)
+    return response_format if isinstance(response_format, dict) else None
+
+
 def _responses_input_to_messages(request: ResponseRequest) -> list[Any]:
     messages: list[dict[str, Any]] = []
     if request.instructions:
@@ -186,7 +269,7 @@ def _normalize_chat_response(result: Any, model_id: str, tools: list[dict[str, A
     result.setdefault("id", f"chatcmpl_{uuid.uuid4().hex}")
     result.setdefault("object", "chat.completion")
     result.setdefault("created", int(time.time()))
-    result["model"] = result.get("model") or model_id
+    result["model"] = model_id
 
     for choice in result.get("choices", []):
         message = choice.get("message") or {}
@@ -198,6 +281,17 @@ def _normalize_chat_response(result: Any, model_id: str, tools: list[dict[str, A
                 message["content"] = remove_tool_call_markup(content) or None
                 choice["finish_reason"] = "tool_calls"
         choice["message"] = message
+    result.setdefault("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    return result
+
+
+def _normalize_completion_response(result: Any, model_id: str) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise openai_error(500, "backend returned an invalid response", type_="server_error")
+    result.setdefault("id", f"cmpl_{uuid.uuid4().hex}")
+    result.setdefault("object", "text_completion")
+    result.setdefault("created", int(time.time()))
+    result["model"] = model_id
     result.setdefault("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
     return result
 
