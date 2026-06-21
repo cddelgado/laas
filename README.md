@@ -122,6 +122,24 @@ dependencies. TorchVision is needed by Transformers image processors; if it is
 missing, image generation can still work but the server logs CLIP/SigLIP
 fallback warnings.
 
+For NVIDIA GPUs, choose the newest PyTorch CUDA wheel that is less than or
+equal to the CUDA version reported by `nvidia-smi`. The CUDA Toolkit command
+`nvcc` is not required for prebuilt PyTorch wheels.
+
+Windows PowerShell:
+
+```powershell
+nvidia-smi
+```
+
+If `nvidia-smi` reports CUDA 12.8 or newer, install the CUDA 12.8 wheels:
+
+```powershell
+python -m pip install --force-reinstall `
+  --index-url https://download.pytorch.org/whl/cu128 `
+  torch torchvision
+```
+
 CPU-only Windows example:
 
 ```powershell

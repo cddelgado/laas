@@ -244,6 +244,72 @@ install LAAS image dependencies. TorchVision is needed by Transformers image
 processors; if it is missing, image generation can still work but the server
 logs CLIP/SigLIP fallback warnings.
 
+### Choosing a PyTorch CUDA wheel
+
+For prebuilt PyTorch wheels, the CUDA version is the runtime bundled with the
+wheel. You do not need the CUDA Toolkit or `nvcc` unless you are compiling CUDA
+extensions.
+
+On NVIDIA systems, check the driver-supported CUDA runtime:
+
+Windows PowerShell:
+
+```powershell
+nvidia-smi
+```
+
+macOS/Linux shell:
+
+```bash
+nvidia-smi
+```
+
+Use the newest PyTorch CUDA wheel index that is less than or equal to the CUDA
+version reported by `nvidia-smi`. If `nvidia-smi` reports CUDA 12.8 or newer,
+use `cu128`. If it reports CUDA 12.6, use `cu126`. If it reports only CUDA
+12.4, use `cu124` with a PyTorch version that still publishes that wheel.
+
+Current common CUDA 12 choices:
+
+```text
+nvidia-smi reports 12.8 or newer -> https://download.pytorch.org/whl/cu128
+nvidia-smi reports 12.6          -> https://download.pytorch.org/whl/cu126
+nvidia-smi reports 12.4          -> https://download.pytorch.org/whl/cu124
+No NVIDIA GPU or no CUDA needed  -> https://download.pytorch.org/whl/cpu
+```
+
+Use the PyTorch install selector as the source of truth when this list ages:
+<https://pytorch.org/get-started/locally/>.
+
+If you are switching an existing environment from CPU wheels to CUDA wheels,
+use `--force-reinstall`. Otherwise pip may keep an already-installed CPU wheel
+with the same public version.
+
+CUDA 12.8 Windows example:
+
+```powershell
+python -m pip install --force-reinstall `
+  --index-url https://download.pytorch.org/whl/cu128 `
+  torch torchvision
+```
+
+CUDA 12.6 Windows example:
+
+```powershell
+python -m pip install --force-reinstall `
+  --index-url https://download.pytorch.org/whl/cu126 `
+  torch torchvision
+```
+
+Verify the install:
+
+```powershell
+python -c "import torch, torchvision; print(torch.__version__); print(torchvision.__version__); print(torch.cuda.is_available()); print(torch.version.cuda)"
+```
+
+The CUDA build is working when the Torch and TorchVision versions include a
+matching `+cu...` suffix and `torch.cuda.is_available()` prints `True`.
+
 CPU-only Windows example:
 
 ```powershell
