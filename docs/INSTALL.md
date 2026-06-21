@@ -236,7 +236,42 @@ or:
 python -m pip install -e ".[video]"
 ```
 
-## 5. Optional Local Voice Stack
+## 5. Optional Local Image Generation
+
+The SDXL Turbo image backend uses PyTorch and Diffusers. Install a PyTorch wheel
+that matches your OS/GPU first, then install LAAS image dependencies:
+
+```bash
+python -m pip install -r requirements-image.txt
+```
+
+PowerShell:
+
+```powershell
+python -m pip install -r requirements-image.txt
+```
+
+Equivalent `pyproject.toml` extra:
+
+```bash
+python -m pip install -e ".[image]"
+```
+
+Default assets:
+
+```text
+LAAS_IMAGE_MODEL_ID=sdxl-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
+LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_NUM_INFERENCE_STEPS=2
+LAAS_IMAGE_GUIDANCE_SCALE=0.0
+```
+
+The image snapshot uses the same `LAAS_MODEL_DIR` root as the GGUF model. The
+backend downloads a Diffusers snapshot directory rather than a single model
+file.
+
+## 6. Optional Local Voice Stack
 
 The full local voice stack uses Kokoro TTS plus whisper.cpp STT:
 
@@ -295,7 +330,7 @@ If the executable is not on `PATH`, set:
 LAAS_TTS_FFMPEG_PATH=C:\path\to\ffmpeg.exe
 ```
 
-## 6. Configure Model Storage
+## 7. Configure Model Storage
 
 Built-in defaults:
 
@@ -345,6 +380,14 @@ LAAS_STT_AUTO_DOWNLOAD=false
 LAAS_STT_IDLE_UNLOAD_SECONDS=900
 LAAS_VOICE_AUTO_LOAD=false
 LAAS_VOICE_AUTO_DOWNLOAD=false
+LAAS_IMAGE_MODEL_ID=sdxl-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
+LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_NUM_INFERENCE_STEPS=2
+LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_AUTO_LOAD=false
+LAAS_IMAGE_AUTO_DOWNLOAD=false
+LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
 ```
 
 macOS/Linux `.env` example:
@@ -377,9 +420,17 @@ LAAS_STT_AUTO_DOWNLOAD=false
 LAAS_STT_IDLE_UNLOAD_SECONDS=900
 LAAS_VOICE_AUTO_LOAD=false
 LAAS_VOICE_AUTO_DOWNLOAD=false
+LAAS_IMAGE_MODEL_ID=sdxl-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
+LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_NUM_INFERENCE_STEPS=2
+LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_AUTO_LOAD=false
+LAAS_IMAGE_AUTO_DOWNLOAD=false
+LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
 ```
 
-## 7. Download/Load Behavior
+## 8. Download/Load Behavior
 
 LAAS uses `huggingface-hub` to download the configured GGUF.
 
@@ -467,7 +518,7 @@ To opt into missing-model downloads during startup auto-load or first inference:
 LAAS_AUTO_DOWNLOAD=true
 ```
 
-## 7. Run
+## 9. Run
 
 Windows PowerShell:
 
@@ -541,7 +592,7 @@ Direct `uvicorn` launches do not ask interactive questions. They are intended
 for service/process-manager use. Use `/v1/local/models/status` and
 `/v1/local/models/download` for manual control in that mode.
 
-## 8. Verify
+## 10. Verify
 
 Windows PowerShell:
 
@@ -565,7 +616,7 @@ Run tests:
 python -m pytest
 ```
 
-## 9. Unload
+## 11. Unload
 
 Windows PowerShell:
 

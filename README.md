@@ -15,6 +15,7 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `DELETE /v1/responses/{response_id}`
 - `GET /v1/responses/{response_id}/input_items`
 - `POST /v1/embeddings`
+- `POST /v1/images/generations`
 - `POST /v1/audio/speech`
 - `GET /v1/local/settings`
 - `PATCH /v1/local/settings`
@@ -22,6 +23,10 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/models/download`
 - `POST /v1/local/models/load`
 - `POST /v1/local/models/unload`
+- `GET /v1/local/images/status`
+- `POST /v1/local/images/download`
+- `POST /v1/local/images/load`
+- `POST /v1/local/images/unload`
 - `GET /v1/local/audio/status`
 - `GET /v1/local/audio/voices`
 - `POST /v1/local/audio/download`
@@ -111,6 +116,15 @@ python -m pip install -r requirements-voice.txt
 
 The equivalent `pyproject.toml` extra is `python -m pip install -e ".[voice]"`.
 
+For local SDXL Turbo image generation, install a PyTorch wheel that matches your
+GPU first, then install the image dependencies:
+
+```powershell
+python -m pip install -r requirements-image.txt
+```
+
+The equivalent `pyproject.toml` extra is `python -m pip install -e ".[image]"`.
+
 ## Configure
 
 By default, LAAS downloads models to:
@@ -171,6 +185,13 @@ LAAS_VOICE_AUTO_LOAD=false
 LAAS_VOICE_AUTO_DOWNLOAD=false
 LAAS_EMBEDDING_MODEL_ID=laas-hash-embedding
 LAAS_EMBEDDING_DIMENSIONS=384
+LAAS_IMAGE_MODEL_ID=sdxl-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
+LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_NUM_INFERENCE_STEPS=2
+LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_AUTO_LOAD=false
+LAAS_IMAGE_AUTO_DOWNLOAD=false
 ```
 
 ## Run
@@ -302,6 +323,55 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/unload
 
 LAAS also unloads the active model after `LAAS_IDLE_UNLOAD_SECONDS` seconds of
 inactivity. Set it to `0` to disable idle unloading.
+
+## Local Image Generation
+
+The first local image backend is SDXL Turbo through Diffusers. Install the image
+dependencies, start `laas`, then download and load the configured snapshot:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/images/download `
+  -ContentType "application/json" `
+  -Body "{}"
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/images/load `
+  -ContentType "application/json" `
+  -Body "{}"
+```
+
+macOS/Linux:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/local/images/download \
+  -H "Content-Type: application/json" \
+  -d "{}"
+
+curl -X POST http://127.0.0.1:8000/v1/local/images/load \
+  -H "Content-Type: application/json" \
+  -d "{}"
+```
+
+Generate one base64 PNG image:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
+
+image = client.images.generate(
+    model="sdxl-turbo",
+    prompt="a cinematic photo of a tiny robot repairing a neon sign",
+    size="768x768",
+    n=1,
+    response_format="b64_json",
+)
+print(image.data[0].b64_json[:80])
+```
+
+The MVP supports `n=1` and `response_format=b64_json`. Image edits and
+variations are not implemented yet. SDXL Turbo unloads after
+`LAAS_IMAGE_IDLE_UNLOAD_SECONDS` seconds of inactivity; set it to `0` to keep it
+loaded.
 
 ## Local Voice Stack
 

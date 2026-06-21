@@ -64,6 +64,16 @@ class Settings(BaseSettings):
     voice_auto_download: bool = False
     embedding_model_id: str = "laas-hash-embedding"
     embedding_dimensions: int = 384
+    image_model_id: str = "sdxl-turbo"
+    image_hf_repo_id: str = "stabilityai/sdxl-turbo"
+    image_default_size: str = "768x768"
+    image_num_inference_steps: int = 2
+    image_guidance_scale: float = 0.0
+    image_auto_load: bool = False
+    image_auto_download: bool = False
+    image_idle_unload_seconds: int = 900
+    image_device: str = "auto"
+    image_torch_dtype: str = "float16"
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @property
@@ -91,6 +101,10 @@ class Settings(BaseSettings):
     @property
     def stt_model_path(self) -> Path:
         return self.model_dir / self.stt_hf_repo_id.replace("/", "__") / self.stt_model_filename
+
+    @property
+    def image_model_path(self) -> Path:
+        return self.model_dir / self.image_hf_repo_id.replace("/", "__")
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +145,16 @@ class Settings(BaseSettings):
             "voice_auto_download": self.voice_auto_download,
             "embedding_model_id": self.embedding_model_id,
             "embedding_dimensions": self.embedding_dimensions,
+            "image_model_id": self.image_model_id,
+            "image_hf_repo_id": self.image_hf_repo_id,
+            "image_default_size": self.image_default_size,
+            "image_num_inference_steps": self.image_num_inference_steps,
+            "image_guidance_scale": self.image_guidance_scale,
+            "image_auto_load": self.image_auto_load,
+            "image_auto_download": self.image_auto_download,
+            "image_idle_unload_seconds": self.image_idle_unload_seconds,
+            "image_device": self.image_device,
+            "image_torch_dtype": self.image_torch_dtype,
         }
 
 

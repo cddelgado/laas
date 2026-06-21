@@ -66,6 +66,21 @@ class LocalVoiceStackStatus(BaseModel):
     is_loaded: bool
 
 
+class LocalImageStatus(BaseModel):
+    configured_model: str
+    loaded_model: str | None
+    is_loaded: bool
+    model_path: str
+    downloaded: bool
+    default_size: str
+    num_inference_steps: int
+    guidance_scale: float
+    device: str
+    torch_dtype: str
+    idle_unload_seconds: int
+    last_used_at: float | None = None
+
+
 class DownloadAudioRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
@@ -95,6 +110,17 @@ class LoadTranscriptionRequest(BaseModel):
 
 
 class LoadVoiceStackRequest(BaseModel):
+    download_if_missing: bool = True
+
+
+class DownloadImageRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+
+
+class LoadImageRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
     download_if_missing: bool = True
 
 
@@ -253,6 +279,21 @@ class EmbeddingRequest(BaseModel):
     user: str | None = None
 
 
+class ImageGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    model: str | None = None
+    prompt: str
+    n: int = Field(default=1, ge=1)
+    size: str | None = None
+    response_format: Literal["b64_json", "url"] = "b64_json"
+    user: str | None = None
+    negative_prompt: str | None = None
+    num_inference_steps: int | None = Field(default=None, gt=0)
+    guidance_scale: float | None = None
+    seed: int | None = None
+
+
 class OpenAIModel(BaseModel):
     id: str
     object: Literal["model"] = "model"
@@ -305,3 +346,13 @@ class SettingsPatch(BaseModel):
     voice_auto_download: bool | None = None
     embedding_model_id: str | None = None
     embedding_dimensions: int | None = Field(default=None, gt=0)
+    image_model_id: str | None = None
+    image_hf_repo_id: str | None = None
+    image_default_size: str | None = None
+    image_num_inference_steps: int | None = Field(default=None, gt=0)
+    image_guidance_scale: float | None = None
+    image_auto_load: bool | None = None
+    image_auto_download: bool | None = None
+    image_idle_unload_seconds: int | None = Field(default=None, ge=0)
+    image_device: str | None = None
+    image_torch_dtype: str | None = None

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs
+from laas.image import GeneratedImage, ImageBackend, ImageManager
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
 from laas.manager import ModelManager
 from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
@@ -165,6 +166,19 @@ class FakeTranscriptionBackend(TranscriptionBackend):
         self.closed = True
 
 
+class FakeImageBackend(ImageBackend):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def generate(self, **kwargs) -> GeneratedImage:
+        self.calls.append(kwargs)
+        return GeneratedImage(content=b"fake-png", media_type="image/png")
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def make_audio_client(
     tmp_path: Path,
     *,
@@ -194,6 +208,33 @@ def make_audio_client(
 
     client = TestClient(create_app(settings=settings, manager=text_manager, audio_manager=audio_manager))
     return client, backend
+
+
+def make_image_client(
+    tmp_path: Path,
+    *,
+    write_model: bool = True,
+) -> tuple[TestClient, FakeImageBackend]:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        image_idle_unload_seconds=0,
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    image_backend = FakeImageBackend()
+    image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: image_backend)
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    if write_model:
+        settings.image_model_path.mkdir(parents=True, exist_ok=True)
+        (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+
+    client = TestClient(create_app(settings=settings, manager=text_manager, image_manager=image_manager))
+    return client, image_backend
 
 
 def make_voice_client(
@@ -248,9 +289,12 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     assert models["object"] == "list"
     assert models["data"][0]["id"] == "gemma-4-e4b-it-q4_k_m"
     assert any(model["id"] == "laas-hash-embedding" for model in models["data"])
+    assert any(model["id"] == "sdxl-turbo" for model in models["data"])
 
     embedding_model = client.get("/v1/models/laas-hash-embedding").json()
     assert embedding_model["id"] == "laas-hash-embedding"
+    image_model = client.get("/v1/models/sdxl-turbo").json()
+    assert image_model["id"] == "sdxl-turbo"
 
     status = client.get("/v1/local/models/status").json()
     assert status["configured_model"] == "gemma-4-e4b-it-q4_k_m"
@@ -310,6 +354,94 @@ def test_embeddings_endpoint_validates_inputs(tmp_path: Path) -> None:
     assert empty.status_code == 400
     unknown_model = client.post("/v1/embeddings", json={"model": "missing", "input": "hello"})
     assert unknown_model.status_code == 404
+
+
+def test_image_generation_status_load_generate_and_unload(tmp_path: Path) -> None:
+    client, backend = make_image_client(tmp_path)
+
+    status = client.get("/v1/local/images/status").json()
+    assert status["configured_model"] == "sdxl-turbo"
+    assert status["downloaded"] is True
+    assert status["is_loaded"] is False
+
+    loaded = client.post("/v1/local/images/load", json={}).json()
+    assert loaded["is_loaded"] is True
+
+    response = client.post(
+        "/v1/images/generations",
+        json={
+            "model": "sdxl-turbo",
+            "prompt": "a tiny robot repairing a neon sign",
+            "size": "512x384",
+            "response_format": "b64_json",
+            "num_inference_steps": 3,
+            "guidance_scale": 0.5,
+            "seed": 42,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "created" in payload
+    assert base64.b64decode(payload["data"][0]["b64_json"]) == b"fake-png"
+    assert payload["data"][0]["revised_prompt"] == "a tiny robot repairing a neon sign"
+    assert backend.calls[0]["prompt"] == "a tiny robot repairing a neon sign"
+    assert backend.calls[0]["width"] == 512
+    assert backend.calls[0]["height"] == 384
+    assert backend.calls[0]["num_inference_steps"] == 3
+    assert backend.calls[0]["guidance_scale"] == 0.5
+    assert backend.calls[0]["seed"] == 42
+
+    unloaded = client.post("/v1/local/images/unload", json={}).json()
+    assert unloaded["is_loaded"] is False
+    assert backend.closed is True
+
+
+def test_image_generation_rejects_unsupported_options(tmp_path: Path) -> None:
+    client, _backend = make_image_client(tmp_path)
+
+    unknown_model = client.post("/v1/images/generations", json={"model": "missing", "prompt": "hello"})
+    assert unknown_model.status_code == 404
+
+    multiple = client.post("/v1/images/generations", json={"prompt": "hello", "n": 2})
+    assert multiple.status_code == 400
+    assert multiple.json()["detail"]["error"]["param"] == "n"
+
+    url_response = client.post(
+        "/v1/images/generations",
+        json={"prompt": "hello", "response_format": "url"},
+    )
+    assert url_response.status_code == 400
+    assert url_response.json()["detail"]["error"]["param"] == "response_format"
+
+
+def test_image_generation_missing_model_requires_download(tmp_path: Path) -> None:
+    client, _backend = make_image_client(tmp_path, write_model=False)
+
+    load_response = client.post("/v1/local/images/load", json={"download_if_missing": False})
+    assert load_response.status_code == 409
+    assert load_response.json()["detail"]["error"]["code"] == "image_model_not_downloaded"
+
+    generation_response = client.post("/v1/images/generations", json={"prompt": "hello"})
+    assert generation_response.status_code == 409
+    assert generation_response.json()["detail"]["error"]["code"] == "image_model_not_downloaded"
+
+
+def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
+    client, _backend = make_image_client(tmp_path, write_model=False)
+
+    def fake_snapshot_download(*, repo_id, local_dir):
+        path = Path(local_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "model_index.json").write_text("{}", encoding="utf-8")
+        return str(path)
+
+    monkeypatch.setattr("laas.image.snapshot_download", fake_snapshot_download)
+    response = client.post("/v1/local/images/download", json={})
+
+    assert response.status_code == 200
+    assert response.json()["downloaded"] is True
+    assert response.json()["model_id"] == "sdxl-turbo"
 
 
 def test_tool_call_translation(tmp_path: Path) -> None:

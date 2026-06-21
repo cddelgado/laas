@@ -13,14 +13,18 @@ from fastapi import FastAPI, File, Form, Response, UploadFile, WebSocket, WebSoc
 from fastapi.responses import PlainTextResponse
 
 from .errors import openai_error
+from .image import ImageManager, ImageNotDownloadedError, parse_image_size
 from .manager import ModelManager, ModelNotDownloadedError
 from .openai_compat import _normalize_chat_response, build_openai_router
 from .schemas import (
     CreateVoiceSessionRequest,
     DownloadAudioRequest,
+    DownloadImageRequest,
     DownloadModelRequest,
     DownloadTranscriptionRequest,
+    ImageGenerationRequest,
     LoadAudioRequest,
+    LoadImageRequest,
     LoadModelRequest,
     LoadTranscriptionRequest,
     LoadVoiceStackRequest,
@@ -42,11 +46,13 @@ def create_app(
     manager: ModelManager | None = None,
     audio_manager: AudioManager | None = None,
     transcription_manager: TranscriptionManager | None = None,
+    image_manager: ImageManager | None = None,
 ) -> FastAPI:
     active_settings = settings or load_settings()
     active_manager = manager or ModelManager(active_settings)
     active_audio_manager = audio_manager or AudioManager(active_settings)
     active_transcription_manager = transcription_manager or TranscriptionManager(active_settings)
+    active_image_manager = image_manager or ImageManager(active_settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -71,6 +77,11 @@ def create_app(
                 active_transcription_manager.load(download_if_missing=active_settings.stt_auto_download)
             except TranscriptionNotDownloadedError:
                 pass
+        if active_settings.image_auto_load:
+            try:
+                active_image_manager.load(download_if_missing=active_settings.image_auto_download)
+            except ImageNotDownloadedError:
+                pass
         yield
 
     app = FastAPI(
@@ -83,6 +94,7 @@ def create_app(
     app.state.manager = active_manager
     app.state.audio_manager = active_audio_manager
     app.state.transcription_manager = active_transcription_manager
+    app.state.image_manager = active_image_manager
     app.state.voice_sessions = {}
 
     @app.get("/health")
@@ -93,6 +105,7 @@ def create_app(
             "audio_model_loaded": active_audio_manager.is_loaded,
             "transcription_model_loaded": active_transcription_manager.is_loaded,
             "voice_stack_loaded": active_audio_manager.is_loaded and active_transcription_manager.is_loaded,
+            "image_model_loaded": active_image_manager.is_loaded,
         }
 
     @app.get("/v1/local/settings")
@@ -159,6 +172,45 @@ def create_app(
     @app.post("/v1/local/models/unload")
     def unload_model() -> dict[str, Any]:
         return active_manager.unload().model_dump()
+
+    @app.get("/v1/local/images/status")
+    def image_status() -> dict[str, Any]:
+        return active_image_manager.status().model_dump()
+
+    @app.post("/v1/local/images/download")
+    def download_image_model(request: DownloadImageRequest) -> dict[str, Any]:
+        if request.hf_repo_id:
+            active_settings.image_hf_repo_id = request.hf_repo_id
+        path = active_image_manager.download()
+        return {
+            "model_id": request.model_id or active_settings.image_model_id,
+            "path": str(path),
+            "downloaded": True,
+        }
+
+    @app.post("/v1/local/images/load")
+    def load_image_model(request: LoadImageRequest) -> dict[str, Any]:
+        try:
+            return active_image_manager.load(
+                model_id=request.model_id,
+                hf_repo_id=request.hf_repo_id,
+                download_if_missing=request.download_if_missing,
+            ).model_dump()
+        except ImageNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured image model is not downloaded. Call POST /v1/local/images/download first, "
+                "or retry POST /v1/local/images/load with download_if_missing=true.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="image_model_not_downloaded",
+            ) from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="image_backend_missing") from exc
+
+    @app.post("/v1/local/images/unload")
+    def unload_image_model() -> dict[str, Any]:
+        return active_image_manager.unload().model_dump()
 
     @app.get("/v1/local/audio/status")
     def audio_status() -> dict[str, Any]:
@@ -597,6 +649,57 @@ def create_app(
                 )
         except WebSocketDisconnect:
             return
+
+    @app.post("/v1/images/generations")
+    def create_image_generation(request: ImageGenerationRequest) -> dict[str, Any]:
+        if request.model and request.model != active_settings.image_model_id:
+            raise openai_error(
+                404,
+                f"The image model '{request.model}' is not available. Configured image model is '{active_settings.image_model_id}'.",
+                param="model",
+                code="model_not_found",
+            )
+        if request.n != 1:
+            raise openai_error(400, "only n=1 is supported for local image generation", param="n")
+        if request.response_format != "b64_json":
+            raise openai_error(400, "only response_format=b64_json is supported", param="response_format")
+        try:
+            width, height = parse_image_size(request.size or active_settings.image_default_size)
+            image = active_image_manager.generate(
+                prompt=request.prompt,
+                negative_prompt=request.negative_prompt,
+                width=width,
+                height=height,
+                num_inference_steps=request.num_inference_steps or active_settings.image_num_inference_steps,
+                guidance_scale=(
+                    request.guidance_scale
+                    if request.guidance_scale is not None
+                    else active_settings.image_guidance_scale
+                ),
+                seed=request.seed,
+            )
+        except ImageNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured image model is not downloaded. Call POST /v1/local/images/download first.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="image_model_not_downloaded",
+            ) from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="image_backend_missing") from exc
+
+        return {
+            "created": int(time.time()),
+            "data": [
+                {
+                    "b64_json": base64.b64encode(image.content).decode("ascii"),
+                    "revised_prompt": request.prompt,
+                }
+            ],
+        }
 
     @app.post("/v1/audio/speech")
     def create_speech(request: SpeechRequest) -> Response:

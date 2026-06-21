@@ -26,6 +26,13 @@ voice = [
     "soundfile>=0.14.0",
 ]
 video = ["opencv-python>=4.10.0"]
+image = [
+    "accelerate>=0.34.0",
+    "diffusers>=0.32.0",
+    "pillow>=10.0.0",
+    "safetensors>=0.4.0",
+    "transformers>=4.44.0",
+]
 dev = [
     "httpx>=0.27.0",
     "pytest>=8.3.0",
