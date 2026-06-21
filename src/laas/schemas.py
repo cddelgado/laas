@@ -239,6 +239,18 @@ class ResponseRequest(BaseModel):
     tools: list[dict[str, Any]] | None = None
     tool_choice: Any = "auto"
     text: dict[str, Any] | None = None
+    previous_response_id: str | None = None
+    store: bool = True
+
+
+class EmbeddingRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    input: str | list[str] | list[int] | list[list[int]]
+    model: str | None = None
+    encoding_format: Literal["float", "base64"] = "float"
+    dimensions: int | None = Field(default=None, gt=0)
+    user: str | None = None
 
 
 class OpenAIModel(BaseModel):
@@ -291,3 +303,5 @@ class SettingsPatch(BaseModel):
     stt_idle_unload_seconds: int | None = Field(default=None, ge=0)
     voice_auto_load: bool | None = None
     voice_auto_download: bool | None = None
+    embedding_model_id: str | None = None
+    embedding_dimensions: int | None = Field(default=None, gt=0)

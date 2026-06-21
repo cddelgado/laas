@@ -257,8 +257,23 @@ class TranscriptionManager:
         )
 
 
-def transcription_to_response(result: TranscriptionResult, response_format: str, *, task: str) -> dict | str:
+def transcription_to_response(
+    result: TranscriptionResult,
+    response_format: str,
+    *,
+    task: str,
+    timestamp_granularities: list[str] | None = None,
+) -> dict | str:
     fmt = response_format or "json"
+    granularities = set(timestamp_granularities or [])
+    unsupported = granularities - {"segment", "word"}
+    if unsupported:
+        unsupported_list = ", ".join(sorted(unsupported))
+        raise ValueError(f"unsupported timestamp granularity: {unsupported_list}")
+    if "word" in granularities:
+        raise ValueError("word timestamp granularity is not supported by the whisper.cpp backend")
+    if granularities and fmt != "verbose_json":
+        raise ValueError("timestamp_granularities requires response_format=verbose_json")
     if fmt == "json":
         return {"text": result.text}
     if fmt == "verbose_json":

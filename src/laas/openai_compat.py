@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import math
+import struct
 import time
 import uuid
 from typing import Any, Iterable
@@ -11,12 +15,13 @@ from fastapi.responses import StreamingResponse
 from .errors import openai_error
 from .manager import ModelManager, ModelNotDownloadedError
 from .multimodal import normalize_chat_messages, normalize_content_parts
-from .schemas import ChatCompletionRequest, CompletionRequest, ModelList, OpenAIModel, ResponseRequest
+from .schemas import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, ModelList, OpenAIModel, ResponseRequest
 from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup
 
 
 def build_openai_router(manager: ModelManager) -> APIRouter:
     router = APIRouter(prefix="/v1")
+    response_store: dict[str, dict[str, Any]] = {}
 
     @router.get("/models", response_model=ModelList)
     def list_models() -> ModelList:
@@ -26,15 +31,21 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
                     id=manager.settings.model_id,
                     created=1712966400,
                     owned_by="google-local-gguf",
-                )
+                ),
+                OpenAIModel(
+                    id=manager.settings.embedding_model_id,
+                    created=1712966400,
+                    owned_by="laas-local",
+                ),
             ]
         )
 
     @router.get("/models/{model_id}")
     def retrieve_model(model_id: str) -> dict[str, Any]:
-        if model_id != manager.settings.model_id:
+        if model_id not in {manager.settings.model_id, manager.settings.embedding_model_id}:
             raise openai_error(404, f"The model '{model_id}' does not exist", param="model", code="model_not_found")
-        return OpenAIModel(id=model_id, created=1712966400, owned_by="google-local-gguf").model_dump()
+        owned_by = "google-local-gguf" if model_id == manager.settings.model_id else "laas-local"
+        return OpenAIModel(id=model_id, created=1712966400, owned_by=owned_by).model_dump()
 
     @router.post("/chat/completions")
     def create_chat_completion(request: ChatCompletionRequest) -> Any:
@@ -78,7 +89,18 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
     @router.post("/responses")
     def create_response(request: ResponseRequest) -> Any:
         _assert_model(request.model, manager)
-        messages = _responses_input_to_messages(request)
+        previous_messages: list[dict[str, Any]] = []
+        if request.previous_response_id:
+            previous = response_store.get(request.previous_response_id)
+            if not previous:
+                raise openai_error(
+                    404,
+                    f"The response '{request.previous_response_id}' does not exist",
+                    param="previous_response_id",
+                    code="response_not_found",
+                )
+            previous_messages = _response_to_messages(previous["response"])
+        messages = [*previous_messages, *_responses_input_to_messages(request)]
         chat_request = ChatCompletionRequest(
             model=request.model,
             messages=messages,
@@ -121,7 +143,63 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             chat_chunks = _normalize_chat_stream(result, manager.settings.model_id, chat_request.tools)
             return _sse(_responses_stream(chat_chunks, manager.settings.model_id))
         chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools)
-        return _chat_to_response(chat_response, request, manager.settings.model_id)
+        response = _chat_to_response(chat_response, request, manager.settings.model_id)
+        if request.store:
+            response_store[response["id"]] = {
+                "response": response,
+                "input": _response_input_items_for_storage(request),
+            }
+        return response
+
+    @router.get("/responses/{response_id}")
+    def retrieve_response(response_id: str) -> dict[str, Any]:
+        stored = response_store.get(response_id)
+        if not stored:
+            raise openai_error(404, f"The response '{response_id}' does not exist", code="response_not_found")
+        return stored["response"]
+
+    @router.delete("/responses/{response_id}")
+    def delete_response(response_id: str) -> dict[str, Any]:
+        if response_id not in response_store:
+            raise openai_error(404, f"The response '{response_id}' does not exist", code="response_not_found")
+        del response_store[response_id]
+        return {"id": response_id, "object": "response.deleted", "deleted": True}
+
+    @router.get("/responses/{response_id}/input_items")
+    def list_response_input_items(response_id: str) -> dict[str, Any]:
+        stored = response_store.get(response_id)
+        if not stored:
+            raise openai_error(404, f"The response '{response_id}' does not exist", code="response_not_found")
+        return {
+            "object": "list",
+            "data": stored["input"],
+            "first_id": stored["input"][0].get("id") if stored["input"] else None,
+            "last_id": stored["input"][-1].get("id") if stored["input"] else None,
+            "has_more": False,
+        }
+
+    @router.post("/embeddings")
+    def create_embedding(request: EmbeddingRequest) -> dict[str, Any]:
+        model_id = request.model or manager.settings.embedding_model_id
+        if model_id != manager.settings.embedding_model_id:
+            raise openai_error(404, f"The embedding model '{model_id}' does not exist", param="model", code="model_not_found")
+        inputs = _normalize_embedding_inputs(request.input)
+        dimensions = request.dimensions or manager.settings.embedding_dimensions
+        data = [
+            {
+                "object": "embedding",
+                "index": index,
+                "embedding": _encode_embedding(_hash_embedding(value, dimensions), request.encoding_format),
+            }
+            for index, value in enumerate(inputs)
+        ]
+        prompt_tokens = sum(_estimate_tokens(value) for value in inputs)
+        return {
+            "object": "list",
+            "data": data,
+            "model": model_id,
+            "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+        }
 
     return router
 
@@ -262,6 +340,53 @@ def _responses_input_to_messages(request: ResponseRequest) -> list[Any]:
     from .schemas import ChatMessage
 
     return [ChatMessage(**message) for message in messages]
+
+
+def _response_input_items_for_storage(request: ResponseRequest) -> list[dict[str, Any]]:
+    raw_items = request.input if isinstance(request.input, list) else [{"type": "input_text", "text": request.input}]
+    items: list[dict[str, Any]] = []
+    if request.instructions:
+        items.append({"id": f"item_{uuid.uuid4().hex}", "type": "message", "role": "system", "content": request.instructions})
+    for item in raw_items:
+        if isinstance(item, dict):
+            stored = dict(item)
+        else:
+            stored = {"type": "input_text", "text": str(item)}
+        stored.setdefault("id", f"item_{uuid.uuid4().hex}")
+        items.append(stored)
+    return items
+
+
+def _response_to_messages(response: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for item in response.get("output", []):
+        item_type = item.get("type")
+        if item_type == "message":
+            text = "".join(
+                part.get("text", "")
+                for part in item.get("content", [])
+                if isinstance(part, dict) and part.get("type") == "output_text"
+            )
+            if text:
+                messages.append({"role": item.get("role", "assistant"), "content": text})
+        elif item_type == "function_call":
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": item.get("call_id") or item.get("id"),
+                            "type": "function",
+                            "function": {
+                                "name": item.get("name"),
+                                "arguments": item.get("arguments", ""),
+                            },
+                        }
+                    ],
+                }
+            )
+    return messages
 
 
 def _normalize_chat_response(result: Any, model_id: str, tools: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -499,7 +624,8 @@ def _chat_to_response(chat_response: dict[str, Any], request: ResponseRequest, m
         "output": output,
         "output_text": output_text,
         "parallel_tool_calls": True,
-        "previous_response_id": None,
+        "previous_response_id": request.previous_response_id,
+        "store": request.store,
         "temperature": request.temperature,
         "tool_choice": request.tool_choice,
         "tools": request.tools or [],
@@ -510,6 +636,50 @@ def _chat_to_response(chat_response: dict[str, Any], request: ResponseRequest, m
             "total_tokens": chat_response.get("usage", {}).get("total_tokens", 0),
         },
     }
+
+
+def _normalize_embedding_inputs(value: Any) -> list[str]:
+    if isinstance(value, str):
+        if not value:
+            raise openai_error(400, "input cannot be an empty string", param="input")
+        return [value]
+    if not isinstance(value, list) or not value:
+        raise openai_error(400, "input must be a string or non-empty array", param="input")
+    if all(isinstance(item, str) for item in value):
+        if any(item == "" for item in value):
+            raise openai_error(400, "input array cannot contain empty strings", param="input")
+        return list(value)
+    if all(isinstance(item, int) for item in value):
+        return [" ".join(str(item) for item in value)]
+    if all(isinstance(item, list) and all(isinstance(token, int) for token in item) for item in value):
+        return [" ".join(str(token) for token in item) for item in value]
+    raise openai_error(400, "input must be a string, array of strings, token array, or array of token arrays", param="input")
+
+
+def _hash_embedding(value: str, dimensions: int) -> list[float]:
+    values: list[float] = []
+    counter = 0
+    while len(values) < dimensions:
+        digest = hashlib.sha256(f"{value}\0{counter}".encode("utf-8")).digest()
+        for offset in range(0, len(digest), 4):
+            integer = int.from_bytes(digest[offset : offset + 4], "big", signed=False)
+            values.append((integer / 0xFFFFFFFF) * 2.0 - 1.0)
+            if len(values) == dimensions:
+                break
+        counter += 1
+    magnitude = math.sqrt(sum(item * item for item in values)) or 1.0
+    return [item / magnitude for item in values]
+
+
+def _encode_embedding(vector: list[float], encoding_format: str) -> list[float] | str:
+    if encoding_format == "float":
+        return vector
+    packed = b"".join(struct.pack("<f", value) for value in vector)
+    return base64.b64encode(packed).decode("ascii")
+
+
+def _estimate_tokens(value: str) -> int:
+    return max(1, len(value.split()))
 
 
 def _sse(chunks: Any) -> StreamingResponse:

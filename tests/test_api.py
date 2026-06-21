@@ -78,6 +78,15 @@ class CapturingBackend(EchoBackend):
         return super().completion(**kwargs)
 
 
+class MessageCapturingBackend(EchoBackend):
+    def __init__(self) -> None:
+        self.calls: list[list[dict[str, object]]] = []
+
+    def chat_completion(self, **kwargs):
+        self.calls.append(kwargs["messages"])
+        return super().chat_completion(**kwargs)
+
+
 class StreamingToolBackend(EchoBackend):
     def chat_completion(self, **kwargs):
         if not kwargs.get("stream"):
@@ -238,6 +247,10 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     models = client.get("/v1/models").json()
     assert models["object"] == "list"
     assert models["data"][0]["id"] == "gemma-4-e4b-it-q4_k_m"
+    assert any(model["id"] == "laas-hash-embedding" for model in models["data"])
+
+    embedding_model = client.get("/v1/models/laas-hash-embedding").json()
+    assert embedding_model["id"] == "laas-hash-embedding"
 
     status = client.get("/v1/local/models/status").json()
     assert status["configured_model"] == "gemma-4-e4b-it-q4_k_m"
@@ -263,6 +276,40 @@ def test_load_chat_completion_and_unload(tmp_path: Path) -> None:
 
     unloaded = client.post("/v1/local/models/unload").json()
     assert unloaded["is_loaded"] is False
+
+
+def test_embeddings_endpoint_supports_float_and_base64(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/v1/embeddings",
+        json={"model": "laas-hash-embedding", "input": ["alpha", "beta"], "dimensions": 8},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "list"
+    assert payload["model"] == "laas-hash-embedding"
+    assert len(payload["data"]) == 2
+    assert payload["data"][0]["object"] == "embedding"
+    assert payload["data"][0]["index"] == 0
+    assert len(payload["data"][0]["embedding"]) == 8
+    assert payload["usage"]["prompt_tokens"] == 2
+
+    encoded = client.post(
+        "/v1/embeddings",
+        json={"input": "alpha", "dimensions": 4, "encoding_format": "base64"},
+    ).json()
+    assert isinstance(encoded["data"][0]["embedding"], str)
+    assert len(base64.b64decode(encoded["data"][0]["embedding"])) == 16
+
+
+def test_embeddings_endpoint_validates_inputs(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    empty = client.post("/v1/embeddings", json={"input": ""})
+    assert empty.status_code == 400
+    unknown_model = client.post("/v1/embeddings", json={"model": "missing", "input": "hello"})
+    assert unknown_model.status_code == 404
 
 
 def test_tool_call_translation(tmp_path: Path) -> None:
@@ -525,6 +572,41 @@ def test_video_frames_translate_to_image_parts(tmp_path: Path) -> None:
     assert "summarize video" in response["output_text"]
 
 
+def test_responses_store_retrieve_delete_and_previous_response_id(tmp_path: Path) -> None:
+    backend = MessageCapturingBackend()
+    client = make_client_with_backend(tmp_path, backend)
+
+    first = client.post("/v1/responses", json={"input": "first"}).json()
+    assert first["previous_response_id"] is None
+    assert first["store"] is True
+
+    retrieved = client.get(f"/v1/responses/{first['id']}").json()
+    assert retrieved["id"] == first["id"]
+    input_items = client.get(f"/v1/responses/{first['id']}/input_items").json()
+    assert input_items["object"] == "list"
+    assert input_items["data"][0]["text"] == "first"
+
+    second = client.post(
+        "/v1/responses",
+        json={"input": "second", "previous_response_id": first["id"]},
+    ).json()
+    assert second["previous_response_id"] == first["id"]
+    assert any(message.get("role") == "assistant" and message.get("content") == "first" for message in backend.calls[-1])
+
+    deleted = client.delete(f"/v1/responses/{first['id']}").json()
+    assert deleted == {"id": first["id"], "object": "response.deleted", "deleted": True}
+    assert client.get(f"/v1/responses/{first['id']}").status_code == 404
+
+
+def test_responses_store_false_is_not_retrievable(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post("/v1/responses", json={"input": "temporary", "store": False}).json()
+
+    assert response["store"] is False
+    assert client.get(f"/v1/responses/{response['id']}").status_code == 404
+
+
 def test_audio_status_voices_speech_and_unload(tmp_path: Path) -> None:
     client, backend = make_audio_client(tmp_path)
 
@@ -646,6 +728,35 @@ def test_transcription_endpoint_accepts_file_and_returns_verbose_json(tmp_path: 
     assert transcription_backend.calls[0]["language"] == "en"
     assert transcription_backend.calls[0]["prompt"] == "domain words"
     assert transcription_backend.calls[0]["translate"] is False
+
+
+def test_transcription_timestamp_granularities(tmp_path: Path) -> None:
+    client, _audio_backend, _transcription_backend = make_voice_client(tmp_path)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "whisper-1",
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": "segment",
+        },
+        files={"file": ("sample.wav", b"fake audio bytes", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["segments"][0]["start"] == 0.0
+
+    word_response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "whisper-1",
+            "response_format": "verbose_json",
+            "timestamp_granularities[]": "word",
+        },
+        files={"file": ("sample.wav", b"fake audio bytes", "audio/wav")},
+    )
+    assert word_response.status_code == 400
+    assert word_response.json()["detail"]["error"]["param"] == "response_format"
 
 
 def test_translation_endpoint_and_text_output(tmp_path: Path) -> None:

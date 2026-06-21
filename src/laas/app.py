@@ -674,6 +674,7 @@ def create_app(
         prompt: str | None = Form(None),
         response_format: str = Form("json"),
         temperature: float | None = Form(0.0),
+        timestamp_granularities: list[str] | None = Form(None, alias="timestamp_granularities[]"),
     ) -> Any:
         return await _create_transcription_response(
             file=file,
@@ -684,6 +685,7 @@ def create_app(
             temperature=temperature,
             translate=False,
             task="transcribe",
+            timestamp_granularities=timestamp_granularities,
         )
 
     @app.post("/v1/audio/translations")
@@ -715,6 +717,7 @@ def create_app(
         temperature: float | None,
         translate: bool,
         task: str,
+        timestamp_granularities: list[str] | None = None,
     ) -> Any:
         if model not in {active_settings.stt_model_id, "whisper-1"}:
             raise openai_error(
@@ -732,7 +735,12 @@ def create_app(
                 temperature=temperature,
                 translate=translate,
             )
-            payload = transcription_to_response(result, response_format, task=task)
+            payload = transcription_to_response(
+                result,
+                response_format,
+                task=task,
+                timestamp_granularities=timestamp_granularities,
+            )
         except TranscriptionNotDownloadedError as exc:
             raise openai_error(
                 409,

@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     stt_idle_unload_seconds: int = 900
     voice_auto_load: bool = False
     voice_auto_download: bool = False
+    embedding_model_id: str = "laas-hash-embedding"
+    embedding_dimensions: int = 384
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @property
@@ -127,6 +129,8 @@ class Settings(BaseSettings):
             "stt_idle_unload_seconds": self.stt_idle_unload_seconds,
             "voice_auto_load": self.voice_auto_load,
             "voice_auto_download": self.voice_auto_download,
+            "embedding_model_id": self.embedding_model_id,
+            "embedding_dimensions": self.embedding_dimensions,
         }
 
 

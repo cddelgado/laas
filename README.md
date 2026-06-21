@@ -11,6 +11,10 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/chat/completions`
 - `POST /v1/completions`
 - `POST /v1/responses`
+- `GET /v1/responses/{response_id}`
+- `DELETE /v1/responses/{response_id}`
+- `GET /v1/responses/{response_id}/input_items`
+- `POST /v1/embeddings`
 - `POST /v1/audio/speech`
 - `GET /v1/local/settings`
 - `PATCH /v1/local/settings`
@@ -165,6 +169,8 @@ LAAS_STT_MODEL_FILENAME=ggml-small.bin
 LAAS_STT_AUTO_DOWNLOAD=false
 LAAS_VOICE_AUTO_LOAD=false
 LAAS_VOICE_AUTO_DOWNLOAD=false
+LAAS_EMBEDDING_MODEL_ID=laas-hash-embedding
+LAAS_EMBEDDING_DIMENSIONS=384
 ```
 
 ## Run
@@ -395,6 +401,9 @@ print(response.json()["text"])
 `POST /v1/audio/translations` accepts the same multipart upload shape and asks
 Whisper to translate speech to English. Supported transcription response formats
 are `json`, `text`, `srt`, `verbose_json`, and `vtt`.
+For `verbose_json` transcription requests, `timestamp_granularities[]=segment`
+is supported. `timestamp_granularities[]=word` returns an explicit compatibility
+error because the whisper.cpp backend used here does not expose word timestamps.
 
 For a full local voice turn, create a voice session and send audio to the turn
 endpoint. LAAS transcribes the audio with Whisper, sends the transcript to the
@@ -479,6 +488,34 @@ response = client.chat.completions.create(
     messages=[{"role": "user", "content": "Say hello from Gemma."}],
 )
 print(response.choices[0].message.content)
+```
+
+Responses are stored in memory by default, so clients can retrieve them or chain
+local context with `previous_response_id`:
+
+```python
+first = client.responses.create(model="gemma-4-e4b-it-q4_k_m", input="One sentence.")
+second = client.responses.create(
+    model="gemma-4-e4b-it-q4_k_m",
+    previous_response_id=first.id,
+    input="Now add one more.",
+)
+```
+
+Set `store=False` for one-off responses that should not be retrievable. Stored
+responses are process-local and disappear when the server restarts.
+
+The local embeddings endpoint exposes `laas-hash-embedding`. It is deterministic
+and OpenAI-shape-compatible for local development, but it is not a semantic
+embedding model:
+
+```python
+embedding = client.embeddings.create(
+    model="laas-hash-embedding",
+    input=["alpha", "beta"],
+    dimensions=128,
+)
+print(len(embedding.data[0].embedding))
 ```
 
 ## Notes
