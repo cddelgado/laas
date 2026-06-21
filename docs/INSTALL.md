@@ -238,8 +238,19 @@ python -m pip install -e ".[video]"
 
 ## 5. Optional Local Image Generation
 
-The SDXL Turbo image backend uses PyTorch and Diffusers. Install a PyTorch wheel
-that matches your OS/GPU first, then install LAAS image dependencies:
+The SDXL Turbo image backend uses PyTorch and Diffusers. Install PyTorch and
+TorchVision wheels from the same PyTorch index for your OS/GPU first, then
+install LAAS image dependencies. TorchVision is needed by Transformers image
+processors; if it is missing, image generation can still work but the server
+logs CLIP/SigLIP fallback warnings.
+
+CPU-only Windows example:
+
+```powershell
+python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+```
+
+Then install the Diffusers-side dependencies:
 
 ```bash
 python -m pip install -r requirements-image.txt

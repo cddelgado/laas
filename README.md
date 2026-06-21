@@ -116,8 +116,19 @@ python -m pip install -r requirements-voice.txt
 
 The equivalent `pyproject.toml` extra is `python -m pip install -e ".[voice]"`.
 
-For local SDXL Turbo image generation, install a PyTorch wheel that matches your
-GPU first, then install the image dependencies:
+For local SDXL Turbo image generation, install PyTorch and TorchVision wheels
+from the same PyTorch index for your OS/GPU first, then install the image
+dependencies. TorchVision is needed by Transformers image processors; if it is
+missing, image generation can still work but the server logs CLIP/SigLIP
+fallback warnings.
+
+CPU-only Windows example:
+
+```powershell
+python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+```
+
+Then install the Diffusers-side dependencies:
 
 ```powershell
 python -m pip install -r requirements-image.txt
