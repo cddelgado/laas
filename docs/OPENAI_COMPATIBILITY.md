@@ -14,12 +14,29 @@ Fine-tuning, Vector Stores, Realtime, Containers, Skills, and Administration.
 | Surface | LAAS endpoints | Notes |
 | --- | --- | --- |
 | Models | `GET /v1/models`, `GET /v1/models/{model_id}` | Lists configured local text, embedding, image, and image edit models. |
-| Chat Completions | `POST /v1/chat/completions` | Local Gemma chat with streaming, multimodal content normalization, and Gemma tool-call translation. |
+| Chat Completions | `POST /v1/chat/completions` | Local Gemma chat with streaming, multimodal content normalization, OpenAI-shaped `input_audio` validation, bounded video-to-frame translation, and Gemma tool-call translation. |
 | Completions | `POST /v1/completions` | Legacy text completion compatibility over the local llama.cpp backend. |
 | Responses | `POST /v1/responses`, `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items` | Local in-memory response storage with text and function-call output normalization. |
 | Embeddings | `POST /v1/embeddings` | Local Sentence Transformers backend, defaulting to `bge-small-en-v1.5`. |
 | Images | `POST /v1/images/generations`, `POST /v1/images/variations`, `POST /v1/images/edits` | Local Diffusers generation, variation, and inpainting/edit compatibility. |
 | Audio | `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` | Local Kokoro TTS and whisper.cpp-compatible STT. |
+
+## Multimodal Notes
+
+Chat Completions audio input follows OpenAI's `input_audio` content part shape:
+base64 `data` plus `format` of `wav` or `mp3`. LAAS forwards valid audio parts
+to the loaded Gemma/llama.cpp backend and does not silently fall back to
+Whisper transcription.
+
+Video input is a LAAS/Gemma compatibility extension. `input_video` accepts
+explicit image `frames`, local paths, HTTP(S) URLs, data URLs, or inline base64
+video data. LAAS extracts a bounded, deterministic set of JPEG frames controlled
+by `video_max_frames`, `video_sample_fps`, `video_max_seconds`, and
+`video_frame_size`.
+
+Native Chat Completions audio output through `modalities: ["audio"]` is
+explicitly rejected because the local Gemma text backend does not produce
+OpenAI-style audio response objects. Use `POST /v1/audio/speech` for Kokoro TTS.
 
 ## Unsupported But Registered
 

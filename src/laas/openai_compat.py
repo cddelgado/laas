@@ -11,8 +11,9 @@ from fastapi.responses import StreamingResponse
 from .embedding import EmbeddingManager, EmbeddingNotDownloadedError, encode_embedding, estimate_tokens
 from .errors import openai_error
 from .manager import ModelManager, ModelNotDownloadedError
-from .multimodal import normalize_chat_messages, normalize_content_parts
+from .multimodal import VideoExtractionConfig, normalize_chat_messages, normalize_content_parts
 from .schemas import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, ModelList, OpenAIModel, ResponseRequest
+from .settings import Settings
 from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup, validate_tool_choice
 
 
@@ -141,7 +142,10 @@ def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManag
     def create_chat_completion(request: ChatCompletionRequest) -> Any:
         _assert_model(request.model, manager)
         _validate_capabilities(request, manager)
-        messages = normalize_chat_messages([message.model_dump(exclude_none=True) for message in request.messages])
+        messages = normalize_chat_messages(
+            [message.model_dump(exclude_none=True) for message in request.messages],
+            video_config=_video_config(manager.settings),
+        )
         tools = normalize_tools_for_responses(request.tools)
         backend = _get_backend(manager)
         result = backend.chat_completion(
@@ -190,7 +194,7 @@ def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManag
                     code="response_not_found",
                 )
             previous_messages = _response_to_messages(previous["response"])
-        messages = [*previous_messages, *_responses_input_to_messages(request)]
+        messages = [*previous_messages, *_responses_input_to_messages(request, manager.settings)]
         chat_request = ChatCompletionRequest(
             model=request.model,
             messages=messages,
@@ -218,8 +222,12 @@ def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManag
             top_logprobs=request.top_logprobs,
         )
         _validate_capabilities(chat_request, manager)
+        normalized_messages = normalize_chat_messages(
+            [message.model_dump(exclude_none=True) for message in chat_request.messages],
+            video_config=_video_config(manager.settings),
+        )
         result = _get_backend(manager).chat_completion(
-            messages=normalize_chat_messages([message.model_dump(exclude_none=True) for message in chat_request.messages]),
+            messages=normalized_messages,
             model=manager.settings.model_id,
             tools=chat_request.tools,
             tool_choice=chat_request.tool_choice,
@@ -382,6 +390,29 @@ def _get_backend(manager: ModelManager):
 def _validate_capabilities(request: ChatCompletionRequest, manager: ModelManager) -> None:
     if request.tools and not manager.capabilities.tool_calls:
         raise openai_error(400, "the loaded model does not support tool calls", param="tools")
+    if request.modalities:
+        unsupported_modalities = sorted(set(request.modalities) - {"text", "audio"})
+        if unsupported_modalities:
+            raise openai_error(
+                400,
+                f"unsupported response modalities: {', '.join(unsupported_modalities)}",
+                param="modalities",
+                code="unsupported_modality",
+            )
+        if "audio" in request.modalities and not manager.capabilities.audio_output:
+            raise openai_error(
+                400,
+                "the loaded model does not support native audio output through Chat Completions; use /v1/audio/speech",
+                param="modalities",
+                code="unsupported_audio_output",
+            )
+    if request.audio and (not request.modalities or "audio" not in request.modalities):
+        raise openai_error(
+            400,
+            "audio output options require modalities to include 'audio'",
+            param="audio",
+            code="invalid_audio_output",
+        )
     try:
         validate_tool_choice(request.tool_choice, request.tools)
     except ValueError as exc:
@@ -464,8 +495,18 @@ def _response_text_format(text: dict[str, Any] | None) -> dict[str, Any] | None:
     return response_format if isinstance(response_format, dict) else None
 
 
-def _responses_input_to_messages(request: ResponseRequest) -> list[Any]:
+def _video_config(settings: Settings) -> VideoExtractionConfig:
+    return VideoExtractionConfig(
+        max_frames=settings.video_max_frames,
+        sample_fps=settings.video_sample_fps,
+        max_seconds=settings.video_max_seconds,
+        frame_size=settings.video_frame_size,
+    )
+
+
+def _responses_input_to_messages(request: ResponseRequest, settings: Settings) -> list[Any]:
     messages: list[dict[str, Any]] = []
+    video_config = _video_config(settings)
     if request.instructions:
         messages.append({"role": "system", "content": request.instructions})
 
@@ -480,10 +521,10 @@ def _responses_input_to_messages(request: ResponseRequest) -> list[Any]:
                 role = item.get("role", "user")
                 content = item.get("content", "")
                 if isinstance(content, list):
-                    content = normalize_content_parts(content)
+                    content = normalize_content_parts(content, video_config=video_config)
                 messages.append({"role": role, "content": content})
             elif item_type in {"input_text", "input_image", "input_video", "input_audio"}:
-                messages.append({"role": "user", "content": normalize_content_parts([item])})
+                messages.append({"role": "user", "content": normalize_content_parts([item], video_config=video_config)})
             elif item_type == "function_call_output":
                 messages.append({"role": "tool", "tool_call_id": item.get("call_id"), "content": item.get("output", "")})
             else:

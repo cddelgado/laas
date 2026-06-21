@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,7 @@ from laas.image import (
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
 from laas.main import main as laas_main
 from laas.manager import ModelManager
-from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
+from laas.openai_compat import _normalize_chat_response, _normalize_completion_response, _video_config
 from laas.settings import Settings, default_model_dir
 from laas.tools import parse_tool_calls, remove_tool_call_markup
 from laas.transcription import (
@@ -1909,6 +1910,147 @@ def test_video_frames_translate_to_image_parts(tmp_path: Path) -> None:
     ).json()
     assert response["status"] == "completed"
     assert "summarize video" in response["output_text"]
+
+
+def test_chat_completion_input_audio_validates_and_reaches_backend(tmp_path: Path) -> None:
+    backend = MessageCapturingBackend()
+    client = make_client_with_backend(tmp_path, backend)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this sound"},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": base64.b64encode(b"fake wav").decode("ascii"),
+                                "format": "WAV",
+                            },
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    audio_part = backend.calls[-1][0]["content"][1]
+    assert audio_part == {
+        "type": "input_audio",
+        "input_audio": {
+            "data": base64.b64encode(b"fake wav").decode("ascii"),
+            "format": "wav",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("audio", "code"),
+    [
+        ({"data": base64.b64encode(b"fake").decode("ascii")}, "invalid_audio_format"),
+        ({"data": "not base64", "format": "wav"}, "invalid_audio"),
+        ({"data": base64.b64encode(b"fake").decode("ascii"), "format": "flac"}, "invalid_audio_format"),
+    ],
+)
+def test_chat_completion_rejects_invalid_input_audio(tmp_path: Path, audio: dict[str, str], code: str) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": [{"type": "input_audio", "input_audio": audio}]}]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == code
+
+
+def test_chat_completion_rejects_native_audio_output_modality(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "say hello"}],
+            "modalities": ["text", "audio"],
+            "audio": {"voice": "alloy", "format": "wav"},
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["code"] == "unsupported_audio_output"
+
+
+def test_video_url_extraction_uses_sampling_settings(tmp_path: Path, monkeypatch) -> None:
+    from laas.multimodal import extract_video_frame_data_urls
+
+    positions: list[int] = []
+
+    class FakeBuffer:
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        def tobytes(self) -> bytes:
+            return f"frame-{self.index}".encode("ascii")
+
+    class FakeCapture:
+        def __init__(self, path: str) -> None:
+            self.path = path
+            self.index = 0
+            self.opened = True
+
+        def isOpened(self) -> bool:
+            return self.opened
+
+        def get(self, prop: int) -> float:
+            if prop == fake_cv2.CAP_PROP_FRAME_COUNT:
+                return 100
+            if prop == fake_cv2.CAP_PROP_FPS:
+                return 10
+            return 0
+
+        def set(self, prop: int, value: int) -> bool:
+            if prop == fake_cv2.CAP_PROP_POS_FRAMES:
+                self.index = int(value)
+                positions.append(self.index)
+            return True
+
+        def read(self):
+            return True, self.index
+
+        def release(self) -> None:
+            self.opened = False
+
+    class FakeCv2:
+        CAP_PROP_FRAME_COUNT = 7
+        CAP_PROP_FPS = 5
+        CAP_PROP_POS_FRAMES = 1
+
+        def VideoCapture(self, path: str) -> FakeCapture:
+            return FakeCapture(path)
+
+        def imencode(self, extension: str, frame: int):
+            return True, FakeBuffer(frame)
+
+    fake_cv2 = FakeCv2()
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        video_max_frames=3,
+        video_sample_fps=1.0,
+        video_max_seconds=4.0,
+    )
+    video_path = tmp_path / "clip.mp4"
+    video_path.write_bytes(b"fake video")
+
+    frames = extract_video_frame_data_urls(str(video_path), config=_video_config(settings))
+
+    assert positions == [0, 20, 30]
+    assert [base64.b64decode(frame.split(",", 1)[1]) for frame in frames] == [b"frame-0", b"frame-20", b"frame-30"]
 
 
 def test_responses_store_retrieve_delete_and_previous_response_id(tmp_path: Path) -> None:

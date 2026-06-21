@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     n_threads: int | None = None
     verbose_llama: bool = False
     idle_unload_seconds: int = 900
+    video_max_frames: int = 8
+    video_sample_fps: float = 0.5
+    video_max_seconds: float = 60.0
+    video_frame_size: int = 768
     tts_model_id: str = "kokoro-82m"
     tts_hf_repo_id: str = "fastrtc/kokoro-onnx"
     tts_model_filename: str = "kokoro-v1.0.onnx"
@@ -167,6 +171,10 @@ class Settings(BaseSettings):
             "n_gpu_layers": self.n_gpu_layers,
             "n_threads": self.n_threads,
             "idle_unload_seconds": self.idle_unload_seconds,
+            "video_max_frames": self.video_max_frames,
+            "video_sample_fps": self.video_sample_fps,
+            "video_max_seconds": self.video_max_seconds,
+            "video_frame_size": self.video_frame_size,
             "tts_model_id": self.tts_model_id,
             "tts_hf_repo_id": self.tts_hf_repo_id,
             "tts_model_filename": self.tts_model_filename,

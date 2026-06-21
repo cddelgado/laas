@@ -232,7 +232,8 @@ possible layers when the installed backend supports GPU offload.
 
 LAAS accepts video inputs by translating video to image frames before sending the
 request to Gemma. If the client sends `frames`, OpenCV is not needed. If the
-client sends a video file path, URL, or data URL, install:
+client sends a video file path, HTTP(S) URL, data URL, or inline base64
+`input_video.data`, install:
 
 ```bash
 python -m pip install -r requirements-video.txt
@@ -243,6 +244,44 @@ or:
 ```bash
 python -m pip install -e ".[video]"
 ```
+
+Accepted video content parts:
+
+```json
+{"type": "input_video", "frames": ["data:image/jpeg;base64,..."]}
+{"type": "input_video", "input_video": {"url": "C:\\path\\to\\clip.mp4"}}
+{"type": "input_video", "input_video": {"url": "data:video/mp4;base64,..."}}
+{"type": "input_video", "input_video": {"data": "...", "format": "mp4"}}
+```
+
+Video extraction is deterministic and bounded by these settings:
+
+| Setting / environment variable | Default | Meaning |
+| --- | ---: | --- |
+| `video_max_frames` / `LAAS_VIDEO_MAX_FRAMES` | `8` | Maximum frames passed to Gemma. |
+| `video_sample_fps` / `LAAS_VIDEO_SAMPLE_FPS` | `0.5` | Candidate sample rate before thinning to `video_max_frames`. |
+| `video_max_seconds` / `LAAS_VIDEO_MAX_SECONDS` | `60.0` | Maximum initial duration sampled from each video. |
+| `video_frame_size` / `LAAS_VIDEO_FRAME_SIZE` | `768` | Maximum long-edge size for extracted JPEG frames. |
+
+For OpenAI-style audio input to Chat Completions, use `input_audio` content
+parts with base64 `data` and `format` set to `wav` or `mp3`. That path is
+native model audio input when the loaded Gemma/llama.cpp backend supports it.
+It does not silently transcribe through Whisper; explicit speech-to-text remains
+`POST /v1/audio/transcriptions`.
+
+```json
+{
+  "type": "input_audio",
+  "input_audio": {
+    "data": "...",
+    "format": "wav"
+  }
+}
+```
+
+OpenAI Chat Completions audio output through `modalities: ["audio"]` is not
+native Gemma output in LAAS. Use `POST /v1/audio/speech` or the local voice
+stack for TTS.
 
 ## 5. Optional Local Image Generation
 

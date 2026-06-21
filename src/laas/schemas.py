@@ -245,6 +245,8 @@ class ChatCompletionRequest(BaseModel):
     tools: list[dict[str, Any]] | None = None
     tool_choice: Any = "auto"
     response_format: dict[str, Any] | None = None
+    modalities: list[str] | None = None
+    audio: dict[str, Any] | None = None
 
     @property
     def requested_max_tokens(self) -> int | None:
@@ -371,6 +373,10 @@ class SettingsPatch(BaseModel):
     n_gpu_layers: int | None = None
     n_threads: int | None = Field(default=None, gt=0)
     idle_unload_seconds: int | None = Field(default=None, ge=0)
+    video_max_frames: int | None = Field(default=None, gt=0)
+    video_sample_fps: float | None = Field(default=None, gt=0)
+    video_max_seconds: float | None = Field(default=None, gt=0)
+    video_frame_size: int | None = Field(default=None, gt=0)
     tts_model_id: str | None = None
     tts_hf_repo_id: str | None = None
     tts_model_filename: str | None = None
