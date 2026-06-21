@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from laas.compat_check import run_compat_check
 from laas.diagnostics import collect_diagnostics
 from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs
@@ -853,9 +854,13 @@ def test_vector_store_async_indexing_status(tmp_path: Path) -> None:
 
     assert attached.status_code == 200
     assert attached.json()["status"] in {"in_progress", "completed"}
+    assert attached.json()["job_id"].startswith("job_")
     status = client.get(f"/v1/local/vector_stores/{store['id']}/indexing/status")
     assert status.status_code == 200
     assert status.json()["file_counts"]["total"] == 1
+    job = client.get(f"/v1/local/jobs/{attached.json()['job_id']}")
+    assert job.status_code == 200
+    assert job.json()["kind"] == "vector_store.index"
 
 
 def test_file_search_injects_context_and_returns_metadata(tmp_path: Path) -> None:
@@ -902,7 +907,11 @@ def test_responses_file_search_returns_metadata(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["laas_file_search"]["results"][0]["file_id"] == file_response["id"]
+    payload = response.json()
+    assert payload["laas_file_search"]["results"][0]["file_id"] == file_response["id"]
+    annotations = payload["output"][0]["content"][0]["annotations"]
+    assert annotations[0]["type"] == "file_citation"
+    assert annotations[0]["file_id"] == file_response["id"]
 
 
 def test_vector_store_extracts_html_text(tmp_path: Path) -> None:
@@ -947,6 +956,14 @@ def test_batches_embeddings_jsonl_output_file(tmp_path: Path) -> None:
     assert row["custom_id"] == "one"
     assert row["response"]["body"]["data"][0]["object"] == "embedding"
 
+    persisted_client = make_client(tmp_path)
+    persisted = persisted_client.get(f"/v1/batches/{payload['id']}")
+    assert persisted.status_code == 200
+    assert persisted.json()["output_file_id"] == payload["output_file_id"]
+
+    jobs = client.get("/v1/local/jobs").json()
+    assert any(job["kind"] == "batch" and job["metadata"].get("batch_id") == payload["id"] for job in jobs["data"])
+
 
 def test_moderations_rule_endpoint(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -958,6 +975,21 @@ def test_moderations_rule_endpoint(tmp_path: Path) -> None:
     assert payload["results"][0]["flagged"] is False
     assert payload["results"][1]["flagged"] is True
     assert payload["results"][1]["categories"]["violence"] is True
+
+
+def test_compat_check_report(monkeypatch) -> None:
+    import laas.compat_check as compat_check
+
+    def fake_request(url: str, *, method: str, body: dict | None, timeout: float):
+        assert url.startswith("http://testserver")
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(compat_check, "_request", fake_request)
+    report = run_compat_check("http://testserver")
+
+    assert report["object"] == "local.compat_check"
+    assert report["ok"] is True
+    assert any(item["name"] == "moderations.create" for item in report["results"])
 
 
 def test_load_chat_completion_and_unload(tmp_path: Path) -> None:

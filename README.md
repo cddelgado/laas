@@ -69,6 +69,8 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `GET /v1/local/files/status`
 - `POST /v1/local/vector_stores/{vector_store_id}/search`
 - `GET /v1/local/vector_stores/{vector_store_id}/indexing/status`
+- `GET /v1/local/jobs`
+- `GET /v1/local/jobs/{job_id}`
 - `GET /v1/local/voice/status`
 - `POST /v1/local/voice/download`
 - `POST /v1/local/voice/load`
@@ -898,9 +900,13 @@ requests.get(
 
 The first local batch implementation supports JSONL requests for
 `/v1/embeddings`. Upload a batch input file with purpose `batch`, then call
-`POST /v1/batches`; the output is written as another local file. The
-`/v1/moderations` endpoint is implemented as deterministic local rules for
-compatibility, not as a replacement for hosted moderation classifiers.
+`POST /v1/batches`; the output is written as another local file. Batch records
+are persisted in the same SQLite file as Files and Vector Stores.
+
+Async vector indexing and local batches also create records under
+`GET /v1/local/jobs`. The `/v1/moderations` endpoint is implemented as
+deterministic local rules for compatibility, not as a replacement for hosted
+moderation classifiers.
 
 ## Compatibility Testing
 
@@ -925,7 +931,14 @@ Optional heavier checks:
 ```bash
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image --include-image-edit --include-voice
+python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-storage
 python scripts/multimodal_fidelity_smoke.py --base-url http://127.0.0.1:8000
+```
+
+Run a lightweight endpoint compatibility probe against a running server:
+
+```bash
+laas compat-check --base-url http://127.0.0.1:8000
 ```
 
 Live pytest smoke tests are disabled unless the relevant environment variables

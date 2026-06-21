@@ -840,11 +840,24 @@ python -m pip install -e ".[documents]"
 The local Batches endpoint currently supports JSONL files for
 `endpoint="/v1/embeddings"`. Upload a `purpose=batch` JSONL file through
 `/v1/files`, call `POST /v1/batches`, and retrieve the returned
-`output_file_id` through `/v1/files/{file_id}/content`.
+`output_file_id` through `/v1/files/{file_id}/content`. Batch records persist
+in SQLite across server restarts.
+
+Async indexing and batch work write local job records:
+
+```bash
+curl http://127.0.0.1:8000/v1/local/jobs
+```
 
 `POST /v1/moderations` is rule-backed and deterministic. It exists for local
 OpenAI-client compatibility and should not be treated as a high-fidelity safety
 classifier.
+
+For a quick endpoint pass/fail report against a running server:
+
+```bash
+laas compat-check --base-url http://127.0.0.1:8000
+```
 
 Gemma 4 multimodal requests require a projector. The default Q4 main model uses
 `mmproj-gemma-4-E4B-it-Q8_0.gguf` because the repo currently publishes Q8 and

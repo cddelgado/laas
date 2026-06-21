@@ -138,7 +138,6 @@ def build_openai_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/v1")
     response_store: dict[str, dict[str, Any]] = {}
-    batch_store: dict[str, dict[str, Any]] = {}
     active_storage = storage or LocalStorage(manager.settings, embedding_manager)
 
     @router.get("/models", response_model=ModelList)
@@ -587,7 +586,15 @@ def build_openai_router(
         try:
             if wait:
                 return active_storage.attach_file(vector_store_id=vector_store_id, file_id=file_id)
-            return active_storage.attach_file_async(vector_store_id=vector_store_id, file_id=file_id)
+            job = active_storage.create_job(
+                kind="vector_store.index",
+                status="in_progress",
+                target_id=f"{vector_store_id}:{file_id}",
+                metadata={"vector_store_id": vector_store_id, "file_id": file_id},
+            )
+            item = active_storage.attach_file_async(vector_store_id=vector_store_id, file_id=file_id, job_id=job["id"])
+            item["job_id"] = job["id"]
+            return item
         except LocalFileNotFoundError as exc:
             raise openai_error(404, f"The file '{file_id}' does not exist", param="file_id", code="file_not_found") from exc
         except VectorStoreNotFoundError as exc:
@@ -680,7 +687,14 @@ def build_openai_router(
             raise openai_error(400, "input_file_id is required", param="input_file_id")
         if endpoint != "/v1/embeddings":
             raise openai_error(400, "only endpoint=/v1/embeddings is currently supported", param="endpoint")
+        job: dict[str, Any] | None = None
         try:
+            job = active_storage.create_job(
+                kind="batch",
+                status="in_progress",
+                target_id=input_file_id,
+                metadata={"endpoint": endpoint},
+            )
             batch = _run_embedding_batch(
                 active_storage=active_storage,
                 embedding_manager=embedding_manager,
@@ -689,35 +703,42 @@ def build_openai_router(
                 completion_window=str(payload.get("completion_window") or "24h"),
                 metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
             )
+            batch["job_id"] = job["id"]
+            active_storage.update_job(job["id"], status=batch["status"], metadata={"batch_id": batch["id"]})
         except LocalFileNotFoundError as exc:
+            if job:
+                active_storage.update_job(job["id"], status="failed", metadata={"error": str(exc)})
             raise openai_error(404, f"The file '{input_file_id}' does not exist", param="input_file_id", code="file_not_found") from exc
         except ValueError as exc:
+            if job:
+                active_storage.update_job(job["id"], status="failed", metadata={"error": str(exc)})
             raise openai_error(400, str(exc), type_="invalid_request_error", param="input_file_id") from exc
         except RuntimeError as exc:
+            if job:
+                active_storage.update_job(job["id"], status="failed", metadata={"error": str(exc)})
             raise openai_error(503, str(exc), type_="server_error", code="batch_failed") from exc
-        batch_store[batch["id"]] = batch
-        return batch
+        return active_storage.create_batch(batch)
 
     @router.get("/batches")
     def list_batches() -> dict[str, Any]:
-        data = sorted(batch_store.values(), key=lambda item: item["created_at"], reverse=True)
-        return {"object": "list", "data": data, "has_more": False}
+        return {"object": "list", "data": active_storage.list_batches(), "has_more": False}
 
     @router.get("/batches/{batch_id}")
     def retrieve_batch(batch_id: str) -> dict[str, Any]:
-        batch = batch_store.get(batch_id)
+        batch = active_storage.get_batch(batch_id)
         if not batch:
             raise openai_error(404, f"The batch '{batch_id}' does not exist", code="batch_not_found")
         return batch
 
     @router.post("/batches/{batch_id}/cancel")
     def cancel_batch(batch_id: str) -> dict[str, Any]:
-        batch = batch_store.get(batch_id)
+        batch = active_storage.get_batch(batch_id)
         if not batch:
             raise openai_error(404, f"The batch '{batch_id}' does not exist", code="batch_not_found")
         if batch["status"] not in {"completed", "failed", "cancelled"}:
             batch["status"] = "cancelled"
             batch["cancelled_at"] = int(time.time())
+            active_storage.update_batch(batch)
         return batch
 
     @router.post("/moderations")
@@ -734,6 +755,17 @@ def build_openai_router(
             "model": payload.get("model") or "laas-rule-moderation",
             "results": [_moderation_result(value) for value in inputs],
         }
+
+    @router.get("/local/jobs")
+    def list_local_jobs() -> dict[str, Any]:
+        return {"object": "list", "data": active_storage.list_jobs(), "has_more": False}
+
+    @router.get("/local/jobs/{job_id}")
+    def retrieve_local_job(job_id: str) -> dict[str, Any]:
+        job = active_storage.get_job(job_id)
+        if not job:
+            raise openai_error(404, f"The job '{job_id}' does not exist", code="job_not_found")
+        return job
 
     register_unsupported_routes(router)
     return router
@@ -1521,7 +1553,13 @@ def _chat_to_response(
                 "id": f"msg_{uuid.uuid4().hex}",
                 "status": "completed",
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": message["content"], "annotations": []}],
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": message["content"],
+                        "annotations": _file_search_annotations(file_search),
+                    }
+                ],
             }
         )
 
@@ -1557,6 +1595,26 @@ def _chat_to_response(
     if file_search is not None:
         response["laas_file_search"] = file_search
     return response
+
+
+def _file_search_annotations(file_search: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not file_search:
+        return []
+    annotations = []
+    for index, item in enumerate(file_search.get("results") or []):
+        annotations.append(
+            {
+                "type": "file_citation",
+                "index": index,
+                "file_id": item.get("file_id"),
+                "filename": item.get("filename"),
+                "chunk_id": item.get("id"),
+                "chunk_index": item.get("chunk_index"),
+                "score": item.get("score"),
+                "vector_store_id": item.get("vector_store_id"),
+            }
+        )
+    return annotations
 
 
 def _normalize_embedding_inputs(value: Any) -> list[str]:

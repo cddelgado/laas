@@ -9,6 +9,7 @@ from typing import Callable
 import uvicorn
 
 from . import __version__
+from .compat_check import run_compat_check
 from .diagnostics import collect_diagnostics
 from .manager import ModelManager
 from .settings import load_settings
@@ -39,9 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["diagnose"],
+        choices=["diagnose", "compat-check"],
         help="Run a local command instead of starting the API server.",
     )
+    parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Base URL for compat-check.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -97,6 +99,12 @@ def main(argv: list[str] | None = None) -> None:
     settings = load_settings()
     if args.command == "diagnose":
         print(json.dumps(collect_diagnostics(settings), indent=2))
+        return
+    if args.command == "compat-check":
+        report = run_compat_check(args.base_url)
+        print(json.dumps(report, indent=2))
+        if not report["ok"]:
+            raise SystemExit(1)
         return
     confirm_missing_model_downloads(
         settings,

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import io
 import tempfile
+import urllib.request
 import wave
 from pathlib import Path
 
@@ -23,10 +25,14 @@ def main() -> int:
     parser.add_argument("--include-image", action="store_true", help="Also call /v1/images/generations.")
     parser.add_argument("--include-image-edit", action="store_true", help="Also call /v1/images/edits.")
     parser.add_argument("--include-voice", action="store_true", help="Also call TTS and transcription endpoints.")
+    parser.add_argument("--include-storage", action="store_true", help="Also call files, vector stores, batches, and moderations.")
     args = parser.parse_args()
 
-    client = OpenAI(base_url=openai_base_url(args.base_url), api_key=args.api_key)
+    base_url = openai_base_url(args.base_url)
+    client = OpenAI(base_url=base_url, api_key=args.api_key)
     run_text_stack(client, args)
+    if args.include_storage:
+        run_storage_stack(client, base_url, args)
     if args.include_image:
         run_image_generation(client, args)
     if args.include_image_edit:
@@ -82,6 +88,109 @@ def run_text_stack(client: OpenAI, args: argparse.Namespace) -> None:
     embedding = client.embeddings.create(model=args.embedding_model, input="alpha", dimensions=8)
     assert len(embedding.data[0].embedding) == 8
     print(f"embeddings.create: {len(embedding.data[0].embedding)} dimensions")
+
+
+def run_storage_stack(client: OpenAI, base_url: str, args: argparse.Namespace) -> None:
+    notes_path = Path(tempfile.gettempdir()) / "laas-openai-smoke-notes.md"
+    batch_path = Path(tempfile.gettempdir()) / "laas-openai-smoke-batch.jsonl"
+    uploaded_id: str | None = None
+    batch_input_id: str | None = None
+    batch_output_id: str | None = None
+    store_id: str | None = None
+    notes_path.write_text("Vulkan setup requires a compatible GPU runtime package.\n", encoding="utf-8")
+    batch_path.write_text(
+        json.dumps(
+            {
+                "custom_id": "embedding-one",
+                "method": "POST",
+                "url": "/v1/embeddings",
+                "body": {"input": "alpha", "dimensions": 4},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        with notes_path.open("rb") as fh:
+            uploaded = client.files.create(file=fh, purpose="assistants")
+        assert uploaded.id
+        uploaded_id = uploaded.id
+        print(f"files.create: {uploaded.id}")
+
+        vector_stores = getattr(client, "vector_stores", None) or getattr(getattr(client, "beta", None), "vector_stores", None)
+        assert vector_stores is not None, "OpenAI SDK does not expose vector_stores"
+        store = vector_stores.create(name="laas-smoke")
+        assert store.id
+        store_id = store.id
+        vector_stores.files.create(vector_store_id=store.id, file_id=uploaded.id)
+        print(f"vector_stores.files.create: {store.id}")
+
+        chat = client.chat.completions.create(
+            model=args.text_model,
+            messages=[{"role": "user", "content": "What does Vulkan setup require?"}],
+            tools=[{"type": "file_search", "vector_store_ids": [store.id]}],
+            max_tokens=64,
+        )
+        assert getattr(chat, "laas_file_search", None) or chat.model_extra.get("laas_file_search")
+        print("chat.completions file_search: received retrieval metadata")
+
+        response = client.responses.create(
+            model=args.text_model,
+            input="What does Vulkan setup require?",
+            tools=[{"type": "file_search", "vector_store_ids": [store.id]}],
+            max_output_tokens=64,
+        )
+        assert response.model_extra.get("laas_file_search")
+        print("responses.create file_search: received retrieval metadata")
+
+        moderation = client.moderations.create(input="hello")
+        assert moderation.results[0].flagged is False
+        print("moderations.create: ok")
+
+        with batch_path.open("rb") as fh:
+            batch_input = client.files.create(file=fh, purpose="batch")
+        batch_input_id = batch_input.id
+        batch = client.batches.create(input_file_id=batch_input.id, endpoint="/v1/embeddings", completion_window="24h")
+        assert batch.output_file_id
+        batch_output_id = batch.output_file_id
+        print(f"batches.create: {batch.status}")
+
+        local_search = post_json(base_url, f"/local/vector_stores/{store.id}/search", {"query": "Vulkan setup", "limit": 1})
+        assert local_search["data"]
+        print("local.vector_stores.search: ok")
+    finally:
+        if store_id:
+            delete_json(base_url, f"/vector_stores/{store_id}")
+        for file_id in (uploaded_id, batch_input_id, batch_output_id):
+            if file_id:
+                delete_json(base_url, f"/files/{file_id}")
+        notes_path.unlink(missing_ok=True)
+        batch_path.unlink(missing_ok=True)
+
+
+def post_json(base_url: str, path: str, payload: dict) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        data=data,
+        headers={"Content-Type": "application/json", "Authorization": "Bearer laas-local"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def delete_json(base_url: str, path: str) -> dict | None:
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}{path}",
+        headers={"Authorization": "Bearer laas-local"},
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
 
 
 def run_image_generation(client: OpenAI, args: argparse.Namespace) -> None:

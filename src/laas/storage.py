@@ -170,11 +170,11 @@ class LocalStorage:
         self._index_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
         return self.get_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
 
-    def attach_file_async(self, *, vector_store_id: str, file_id: str) -> dict[str, Any]:
+    def attach_file_async(self, *, vector_store_id: str, file_id: str, job_id: str | None = None) -> dict[str, Any]:
         self._prepare_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
         thread = threading.Thread(
             target=self._index_vector_store_file,
-            kwargs={"vector_store_id": vector_store_id, "file_id": file_id, "raise_errors": False},
+            kwargs={"vector_store_id": vector_store_id, "file_id": file_id, "raise_errors": False, "job_id": job_id},
             daemon=True,
         )
         thread.start()
@@ -206,7 +206,14 @@ class LocalStorage:
                     (vector_store_id, file_id, "in_progress", created_at),
                 )
 
-    def _index_vector_store_file(self, *, vector_store_id: str, file_id: str, raise_errors: bool = True) -> None:
+    def _index_vector_store_file(
+        self,
+        *,
+        vector_store_id: str,
+        file_id: str,
+        raise_errors: bool = True,
+        job_id: str | None = None,
+    ) -> None:
         with self._lock:
             try:
                 self._index_file(vector_store_id=vector_store_id, file_id=file_id)
@@ -221,6 +228,8 @@ class LocalStorage:
                     )
                 if raise_errors:
                     raise
+                if job_id:
+                    self.update_job(job_id, status="failed", metadata={"error": str(exc)})
                 return
             with self._connect() as con:
                 con.execute(
@@ -230,6 +239,8 @@ class LocalStorage:
                     """,
                     ("completed", vector_store_id, file_id),
                 )
+            if job_id:
+                self.update_job(job_id, status="completed")
 
     def list_vector_store_files(self, vector_store_id: str) -> list[dict[str, Any]]:
         self._vector_store_row(vector_store_id)
@@ -266,6 +277,125 @@ class LocalStorage:
             "deleted": True,
             "vector_store_id": vector_store_id,
         }
+
+    def create_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_initialized()
+            with self._connect() as con:
+                con.execute(
+                    """
+                    insert into batches(id, status, endpoint, input_file_id, output_file_id, error_file_id, created_at, payload_json)
+                    values(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        batch["id"],
+                        batch["status"],
+                        batch["endpoint"],
+                        batch["input_file_id"],
+                        batch.get("output_file_id"),
+                        batch.get("error_file_id"),
+                        batch["created_at"],
+                        json.dumps(batch, sort_keys=True),
+                    ),
+                )
+        return batch
+
+    def list_batches(self) -> list[dict[str, Any]]:
+        self._ensure_initialized()
+        with self._connect() as con:
+            rows = con.execute("select payload_json from batches order by created_at desc, id desc").fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
+
+    def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+        self._ensure_initialized()
+        with self._connect() as con:
+            row = con.execute("select payload_json from batches where id = ?", (batch_id,)).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def update_batch(self, batch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_initialized()
+            with self._connect() as con:
+                con.execute(
+                    """
+                    update batches
+                    set status = ?, output_file_id = ?, error_file_id = ?, payload_json = ?
+                    where id = ?
+                    """,
+                    (
+                        batch["status"],
+                        batch.get("output_file_id"),
+                        batch.get("error_file_id"),
+                        json.dumps(batch, sort_keys=True),
+                        batch["id"],
+                    ),
+                )
+        return batch
+
+    def create_job(
+        self,
+        *,
+        kind: str,
+        status: str,
+        target_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        job = {
+            "id": _new_id("job"),
+            "object": "local.job",
+            "kind": kind,
+            "status": status,
+            "target_id": target_id,
+            "created_at": _now(),
+            "updated_at": _now(),
+            "metadata": metadata or {},
+        }
+        with self._lock:
+            self._ensure_initialized()
+            with self._connect() as con:
+                con.execute(
+                    """
+                    insert into jobs(id, kind, status, target_id, created_at, updated_at, metadata_json)
+                    values(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        job["id"],
+                        kind,
+                        status,
+                        target_id,
+                        job["created_at"],
+                        job["updated_at"],
+                        json.dumps(job["metadata"], sort_keys=True),
+                    ),
+                )
+        return job
+
+    def update_job(self, job_id: str, *, status: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_initialized()
+            existing = self.get_job(job_id)
+            if existing is None:
+                raise KeyError(job_id)
+            merged_metadata = existing["metadata"] | (metadata or {})
+            updated_at = _now()
+            with self._connect() as con:
+                con.execute(
+                    "update jobs set status = ?, updated_at = ?, metadata_json = ? where id = ?",
+                    (status, updated_at, json.dumps(merged_metadata, sort_keys=True), job_id),
+                )
+        return self.get_job(job_id) or existing
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        self._ensure_initialized()
+        with self._connect() as con:
+            row = con.execute("select * from jobs where id = ?", (job_id,)).fetchone()
+        return _job_object(row) if row else None
+
+    def list_jobs(self) -> list[dict[str, Any]]:
+        self._ensure_initialized()
+        with self._connect() as con:
+            rows = con.execute("select * from jobs order by created_at desc, id desc").fetchall()
+        return [_job_object(row) for row in rows]
 
     def search_vector_store(self, *, vector_store_id: str, query: str, limit: int = 8) -> dict[str, Any]:
         if not query.strip():
@@ -449,6 +579,26 @@ class LocalStorage:
                     );
                     create index if not exists idx_vector_chunks_store on vector_chunks(vector_store_id);
                     create index if not exists idx_vector_chunks_file on vector_chunks(file_id);
+                    create table if not exists batches(
+                        id text primary key,
+                        status text not null,
+                        endpoint text not null,
+                        input_file_id text not null,
+                        output_file_id text,
+                        error_file_id text,
+                        created_at integer not null,
+                        payload_json text not null
+                    );
+                    create table if not exists jobs(
+                        id text primary key,
+                        kind text not null,
+                        status text not null,
+                        target_id text,
+                        created_at integer not null,
+                        updated_at integer not null,
+                        metadata_json text not null default '{}'
+                    );
+                    create index if not exists idx_jobs_status on jobs(status);
                     """
                 )
             self._initialized = True
@@ -484,6 +634,19 @@ def _vector_store_file_object(row: sqlite3.Row) -> dict[str, Any]:
     if row["last_error"]:
         payload["last_error"] = row["last_error"]
     return payload
+
+
+def _job_object(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "object": "local.job",
+        "kind": row["kind"],
+        "status": row["status"],
+        "target_id": row["target_id"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+    }
 
 
 def _extract_text(path: Path) -> str:
