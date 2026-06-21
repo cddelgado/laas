@@ -16,7 +16,7 @@ from .errors import openai_error
 from .manager import ModelManager, ModelNotDownloadedError
 from .multimodal import normalize_chat_messages, normalize_content_parts
 from .schemas import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, ModelList, OpenAIModel, ResponseRequest
-from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup
+from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup, validate_tool_choice
 
 
 def build_openai_router(manager: ModelManager) -> APIRouter:
@@ -89,8 +89,8 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             extra_params=_chat_sampling_params(request),
         )
         if request.stream:
-            return _sse(_normalize_chat_stream(result, manager.settings.model_id, tools))
-        return _normalize_chat_response(result, manager.settings.model_id, tools)
+            return _sse(_normalize_chat_stream(result, manager.settings.model_id, tools, request.tool_choice))
+        return _normalize_chat_response(result, manager.settings.model_id, tools, request.tool_choice)
 
     @router.post("/completions")
     def create_completion(request: CompletionRequest) -> Any:
@@ -163,9 +163,14 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             extra_params=_chat_sampling_params(chat_request),
         )
         if request.stream:
-            chat_chunks = _normalize_chat_stream(result, manager.settings.model_id, chat_request.tools)
+            chat_chunks = _normalize_chat_stream(
+                result,
+                manager.settings.model_id,
+                chat_request.tools,
+                chat_request.tool_choice,
+            )
             return _sse(_responses_stream(chat_chunks, manager.settings.model_id))
-        chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools)
+        chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools, chat_request.tool_choice)
         response = _chat_to_response(chat_response, request, manager.settings.model_id)
         if request.store:
             response_store[response["id"]] = {
@@ -255,6 +260,10 @@ def _get_backend(manager: ModelManager):
 def _validate_capabilities(request: ChatCompletionRequest, manager: ModelManager) -> None:
     if request.tools and not manager.capabilities.tool_calls:
         raise openai_error(400, "the loaded model does not support tool calls", param="tools")
+    try:
+        validate_tool_choice(request.tool_choice, request.tools)
+    except ValueError as exc:
+        raise openai_error(400, str(exc), param="tool_choice") from exc
     for message in request.messages:
         content = message.content
         if not isinstance(content, list):
@@ -412,7 +421,12 @@ def _response_to_messages(response: dict[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
-def _normalize_chat_response(result: Any, model_id: str, tools: list[dict[str, Any]] | None) -> dict[str, Any]:
+def _normalize_chat_response(
+    result: Any,
+    model_id: str,
+    tools: list[dict[str, Any]] | None,
+    tool_choice: Any = "auto",
+) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise openai_error(500, "backend returned an invalid response", type_="server_error")
     result.setdefault("id", f"chatcmpl_{uuid.uuid4().hex}")
@@ -424,7 +438,7 @@ def _normalize_chat_response(result: Any, model_id: str, tools: list[dict[str, A
         message = choice.get("message") or {}
         content = message.get("content")
         if isinstance(content, str) and "tool_calls" not in message:
-            tool_calls = parse_tool_calls(content, tools)
+            tool_calls = parse_tool_calls(content, tools, tool_choice)
             if tool_calls:
                 message["tool_calls"] = tool_calls
                 message["content"] = remove_tool_call_markup(content) or None
@@ -449,6 +463,7 @@ def _normalize_chat_stream(
     chunks: Any,
     model_id: str,
     tools: list[dict[str, Any]] | None,
+    tool_choice: Any = "auto",
 ) -> Iterable[dict[str, Any]]:
     stream_id = f"chatcmpl_{uuid.uuid4().hex}"
     created = int(time.time())
@@ -470,7 +485,7 @@ def _normalize_chat_stream(
                 pending_tool_calls.extend(delta.get("tool_calls") or [])
 
         content = "".join(content_buffer)
-        parsed_tool_calls = parse_tool_calls(content, tools)
+        parsed_tool_calls = parse_tool_calls(content, tools, tool_choice)
         tool_calls = pending_tool_calls or parsed_tool_calls
         visible_content = remove_tool_call_markup(content) if parsed_tool_calls else content
         if visible_content:

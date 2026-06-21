@@ -1088,6 +1088,120 @@ def test_tool_call_translation(tmp_path: Path) -> None:
     assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
 
 
+def test_chat_completion_golden_response_shape(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "gemma-4-e4b-it-q4_k_m", "messages": [{"role": "user", "content": "hello"}]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"].startswith("chatcmpl")
+    assert payload["object"] == "chat.completion"
+    assert payload["model"] == "gemma-4-e4b-it-q4_k_m"
+    assert payload["choices"] == [
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "hello"},
+            "finish_reason": "stop",
+        }
+    ]
+    assert payload["usage"] == {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+def test_chat_completion_tool_choice_object_selects_declared_function(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "call_tool"}],
+            "tool_choice": {"type": "function", "function": {"name": "lookup_time"}},
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {}}},
+                },
+                {
+                    "type": "function",
+                    "function": {"name": "lookup_time", "parameters": {"type": "object", "properties": {}}},
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    choice = response.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    assert choice["message"]["tool_calls"][0]["function"] == {"name": "lookup_time", "arguments": "{}"}
+
+
+def test_chat_completion_tool_choice_none_suppresses_tool_translation(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "call_tool"}],
+            "tool_choice": "none",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {}}},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    message = response.json()["choices"][0]["message"]
+    assert message == {"role": "assistant", "content": "call_tool"}
+
+
+def test_chat_completion_tool_choice_required_allows_declared_function(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "call_tool"}],
+            "tool_choice": "required",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {}}},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    choice = response.json()["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
+
+
+def test_chat_completion_unknown_tool_choice_is_openai_error(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "call_tool"}],
+            "tool_choice": {"type": "function", "function": {"name": "missing_tool"}},
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {}}},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["detail"]["error"]
+    assert error["param"] == "tool_choice"
+    assert "missing_tool" in error["message"]
+
+
 def test_chat_completion_streaming_text_is_normalized(tmp_path: Path) -> None:
     client = make_client(tmp_path)
 
@@ -1167,6 +1281,41 @@ def test_responses_streaming_tool_calls_use_responses_events(tmp_path: Path) -> 
     completed = next(event for event in events if event["type"] == "response.completed")
     assert completed["response"]["model"] == "gemma-4-e4b-it-q4_k_m"
     assert completed["response"]["output"][0]["name"] == "get_weather"
+
+
+def test_responses_api_function_call_golden_shape(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    response = client.post(
+        "/v1/responses",
+        json={
+            "model": "gemma-4-e4b-it-q4_k_m",
+            "input": "call_tool",
+            "tool_choice": {"type": "function", "name": "get_weather"},
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"].startswith("resp_")
+    assert payload["object"] == "response"
+    assert payload["status"] == "completed"
+    assert payload["model"] == "gemma-4-e4b-it-q4_k_m"
+    assert payload["output_text"] == ""
+    assert payload["usage"] == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    output = payload["output"]
+    assert len(output) == 1
+    assert output[0]["type"] == "function_call"
+    assert output[0]["call_id"].startswith("call_")
+    assert output[0]["name"] == "get_weather"
+    assert output[0]["arguments"] == "{}"
+    assert output[0]["status"] == "completed"
 
 
 def test_chat_completion_sampling_params_are_forwarded(tmp_path: Path) -> None:
@@ -1276,6 +1425,62 @@ def test_gemma_native_tool_call_translation() -> None:
     assert calls[0]["function"]["name"] == "get_weather"
     assert calls[0]["function"]["arguments"] == '{"location":"Chicago"}'
     assert remove_tool_call_markup(text) == ""
+
+
+def test_tool_call_translation_handles_nested_json_arguments() -> None:
+    text = (
+        'prefix <tool_call>{"name":"get_weather","arguments":{"location":{"city":"Chicago"},'
+        '"units":"fahrenheit"}}</tool_call> suffix'
+    )
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
+
+    calls = parse_tool_calls(text, tools)
+
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_weather"
+    assert calls[0]["function"]["arguments"] == '{"location":{"city":"Chicago"},"units":"fahrenheit"}'
+    assert remove_tool_call_markup(text) == "prefix  suffix"
+
+
+def test_tool_call_translation_filters_unknown_and_unselected_tools() -> None:
+    text = (
+        '<tool_call>{"name":"get_weather","arguments":{}}</tool_call>'
+        '<tool_call>{"name":"lookup_time","arguments":{}}</tool_call>'
+        '<tool_call>{"name":"delete_file","arguments":{}}</tool_call>'
+    )
+    tools = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "lookup_time", "parameters": {"type": "object"}}},
+    ]
+
+    calls = parse_tool_calls(text, tools, {"type": "function", "function": {"name": "lookup_time"}})
+
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "lookup_time"
+    assert parse_tool_calls(text, tools, "none") == []
+
+
+def test_malformed_tool_markup_remains_text_without_crashing() -> None:
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}]
+
+    chat = _normalize_chat_response(
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": '<tool_call>{"name":"get_weather","arguments":'},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+        "gemma-4-e4b-it-q4_k_m",
+        tools,
+    )
+
+    message = chat["choices"][0]["message"]
+    assert message["content"] == '<tool_call>{"name":"get_weather","arguments":'
+    assert "tool_calls" not in message
+    assert chat["choices"][0]["finish_reason"] == "stop"
 
 
 def test_responses_api_text_and_image_parts(tmp_path: Path) -> None:

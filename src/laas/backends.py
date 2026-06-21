@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Iterable
 
-from .tools import parse_tool_calls, remove_tool_call_markup
+from .tools import parse_tool_calls, remove_tool_call_markup, selected_tool_name, tool_name
 
 
 class InferenceBackend(ABC):
@@ -149,12 +149,17 @@ class EchoBackend(InferenceBackend):
         extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | Iterable[dict[str, Any]]:
         content = _last_user_text(messages) or "ok"
-        if tools and tool_choice not in {"none", None} and "call_tool" in content:
-            tool = tools[0].get("function", tools[0])
+        if tools and tool_choice != "none" and "call_tool" in content:
+            chosen_name = selected_tool_name(tool_choice)
+            selected_tool = next(
+                (tool for tool in tools if chosen_name and tool_name(tool) == chosen_name),
+                tools[0],
+            )
+            tool = selected_tool.get("function", selected_tool)
             content = f'<tool_call>{{"name":"{tool.get("name", "tool")}","arguments":{{}}}}</tool_call>'
 
         message: dict[str, Any] = {"role": "assistant", "content": content}
-        tool_calls = parse_tool_calls(content, tools)
+        tool_calls = parse_tool_calls(content, tools, tool_choice)
         if tool_calls:
             message["content"] = remove_tool_call_markup(content) or None
             message["tool_calls"] = tool_calls
