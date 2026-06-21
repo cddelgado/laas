@@ -235,6 +235,8 @@ LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
 LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
 LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
 LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_PADDING_MASK_CROP=32
+LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS=4
 LAAS_IMAGE_EDIT_AUTO_LOAD=false
 LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 ```
@@ -474,6 +476,13 @@ and black pixels for the area to preserve. If the uploaded mask has transparent
 pixels, LAAS treats transparent pixels as the edit area. If no mask is provided,
 the source image must have transparency so LAAS can derive the edit area from
 alpha.
+
+For SD 1.5 inpainting, prompt for the whole finished scene rather than only the
+object inside the mask. A loose object envelope usually works better than a
+tight silhouette, but rectangular masks can still show a changed wall or
+background patch. `LAAS_IMAGE_EDIT_PADDING_MASK_CROP` gives Diffusers extra crop
+context around the mask when the installed pipeline supports it, and
+`LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS` softens the final mask edge.
 
 ```python
 from openai import OpenAI

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import secrets
 import threading
 import time
@@ -78,6 +79,7 @@ class DiffusersImageBackend(ImageBackend):
         except Exception as exc:
             raise RuntimeError("diffusers image support is required: pip install -e .[image]") from exc
 
+        self.settings = settings
         dtype = _torch_dtype(torch, settings.image_torch_dtype)
         self._device = _resolve_device(torch, settings.image_device)
         self._pipe = AutoPipelineForText2Image.from_pretrained(
@@ -157,6 +159,7 @@ class DiffusersImageEditBackend(ImageEditBackend):
         except Exception as exc:
             raise RuntimeError("diffusers image edit support is required: pip install -e .[image]") from exc
 
+        self.settings = settings
         dtype = _torch_dtype(torch, settings.image_torch_dtype)
         self._device = _resolve_device(torch, settings.image_device)
         load_kwargs = {"torch_dtype": dtype}
@@ -169,6 +172,7 @@ class DiffusersImageEditBackend(ImageEditBackend):
             self._pipe.to("mps")
         else:
             self._pipe.to("cpu")
+        self._supports_padding_mask_crop = "padding_mask_crop" in inspect.signature(self._pipe.__call__).parameters
 
     def edit(
         self,
@@ -192,24 +196,30 @@ class DiffusersImageEditBackend(ImageEditBackend):
                 generator = torch.Generator(device=self._device).manual_seed(seed)
             except Exception:
                 generator = None
-        output = self._pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            image=image,
-            mask_image=mask_image,
-            width=width,
-            height=height,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            strength=strength,
-            generator=generator,
-        )
+        pipe_kwargs = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "image": image,
+            "mask_image": mask_image,
+            "width": width,
+            "height": height,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "strength": strength,
+            "generator": generator,
+        }
+        if self._supports_padding_mask_crop and self.settings.image_edit_padding_mask_crop is not None:
+            pipe_kwargs["padding_mask_crop"] = self.settings.image_edit_padding_mask_crop
+        output = self._pipe(**pipe_kwargs)
         result = output.images[0].convert("RGB").resize((width, height))
         base = image.convert("RGB").resize((width, height))
         mask = mask_image.convert("L").resize((width, height))
         try:
-            from PIL import Image
+            from PIL import Image, ImageFilter
 
+            blur_radius = max(0, self.settings.image_edit_composite_blur_radius)
+            if blur_radius:
+                mask = mask.filter(ImageFilter.GaussianBlur(radius=blur_radius))
             result = Image.composite(result, base, mask)
         except Exception:
             pass
@@ -451,6 +461,8 @@ class ImageEditManager:
                 num_inference_steps=self.settings.image_edit_num_inference_steps,
                 guidance_scale=self.settings.image_edit_guidance_scale,
                 strength=self.settings.image_edit_strength,
+                padding_mask_crop=self.settings.image_edit_padding_mask_crop,
+                composite_blur_radius=self.settings.image_edit_composite_blur_radius,
                 device=self.settings.image_device,
                 torch_dtype=self.settings.image_torch_dtype,
                 output_dir=str(self.settings.resolved_image_output_dir),

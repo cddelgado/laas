@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     image_edit_num_inference_steps: int = 25
     image_edit_guidance_scale: float = 7.5
     image_edit_strength: float = 0.8
+    image_edit_padding_mask_crop: int | None = 32
+    image_edit_composite_blur_radius: int = 4
     image_edit_auto_load: bool = False
     image_edit_auto_download: bool = True
     image_edit_idle_unload_seconds: int = 900
@@ -191,6 +193,8 @@ class Settings(BaseSettings):
             "image_edit_num_inference_steps": self.image_edit_num_inference_steps,
             "image_edit_guidance_scale": self.image_edit_guidance_scale,
             "image_edit_strength": self.image_edit_strength,
+            "image_edit_padding_mask_crop": self.image_edit_padding_mask_crop,
+            "image_edit_composite_blur_radius": self.image_edit_composite_blur_radius,
             "image_edit_auto_load": self.image_edit_auto_load,
             "image_edit_auto_download": self.image_edit_auto_download,
             "image_edit_idle_unload_seconds": self.image_edit_idle_unload_seconds,

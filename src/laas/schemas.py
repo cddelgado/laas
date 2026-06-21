@@ -89,6 +89,8 @@ class LocalImageStatus(BaseModel):
 
 class LocalImageEditStatus(LocalImageStatus):
     strength: float
+    padding_mask_crop: int | None = None
+    composite_blur_radius: int = 0
 
 
 class DownloadAudioRequest(BaseModel):

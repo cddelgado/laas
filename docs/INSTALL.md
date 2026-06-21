@@ -352,6 +352,8 @@ LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
 LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
 LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
 LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_PADDING_MASK_CROP=32
+LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS=4
 LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 ```
 
@@ -387,6 +389,14 @@ by default. It accepts multipart form data with `image`, `prompt`, and optional
 pixels for the area to preserve. If the uploaded mask has transparent pixels,
 LAAS treats transparent pixels as the edit area. If no mask is provided, the
 source image must have transparency so LAAS can derive the edit area from alpha.
+
+SD 1.5 inpainting works best when the prompt describes the full completed image,
+not only the object being inserted. Use a loose mask around the intended object
+and give the model enough room to draw edges and shadows. Very tight masks tend
+to get healed back into the background, while rectangular masks can leave a
+visible changed wall or background patch. `LAAS_IMAGE_EDIT_PADDING_MASK_CROP`
+passes Diffusers extra crop context around the mask when supported, and
+`LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS` softens the final mask edge.
 
 Local edit lifecycle endpoints:
 
@@ -528,6 +538,8 @@ LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
 LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
 LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
 LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_PADDING_MASK_CROP=32
+LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS=4
 LAAS_IMAGE_EDIT_AUTO_LOAD=false
 LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 LAAS_IMAGE_EDIT_IDLE_UNLOAD_SECONDS=900
@@ -580,6 +592,8 @@ LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
 LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
 LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
 LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_PADDING_MASK_CROP=32
+LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS=4
 LAAS_IMAGE_EDIT_AUTO_LOAD=false
 LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 LAAS_IMAGE_EDIT_IDLE_UNLOAD_SECONDS=900

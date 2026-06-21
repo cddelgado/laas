@@ -10,7 +10,14 @@ from fastapi.testclient import TestClient
 
 from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs
-from laas.image import GeneratedImage, ImageBackend, ImageEditBackend, ImageEditManager, ImageManager
+from laas.image import (
+    DiffusersImageEditBackend,
+    GeneratedImage,
+    ImageBackend,
+    ImageEditBackend,
+    ImageEditManager,
+    ImageManager,
+)
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
 from laas.manager import ModelManager
 from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
@@ -191,6 +198,47 @@ class FakeImageEditBackend(ImageEditBackend):
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_diffusers_image_edit_backend_passes_padding_crop(tmp_path: Path) -> None:
+    from PIL import Image
+
+    class FakePipe:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            return type("Output", (), {"images": [Image.new("RGB", (8, 8), (0, 0, 0))]})()
+
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        image_edit_padding_mask_crop=24,
+        image_edit_composite_blur_radius=0,
+    )
+    pipe = FakePipe()
+    backend = object.__new__(DiffusersImageEditBackend)
+    backend.settings = settings
+    backend._device = "cpu"
+    backend._pipe = pipe
+    backend._supports_padding_mask_crop = True
+
+    result = backend.edit(
+        prompt="add lamp",
+        negative_prompt=None,
+        image=Image.new("RGB", (8, 8), (255, 255, 255)),
+        mask_image=Image.new("L", (8, 8), 255),
+        width=8,
+        height=8,
+        num_inference_steps=1,
+        guidance_scale=7.5,
+        strength=1.0,
+        seed=None,
+    )
+
+    assert pipe.calls[0]["padding_mask_crop"] == 24
+    assert result.media_type == "image/png"
 
 
 def make_audio_client(
