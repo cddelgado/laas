@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs
+from laas.embedding import EmbeddingManager, HashEmbeddingBackend
 from laas.image import (
     DiffusersImageEditBackend,
     GeneratedImage,
@@ -40,6 +41,18 @@ PNG_1X1 = base64.b64decode(
 OPENAI_COMPAT_FIXTURES = Path(__file__).parent / "fixtures" / "openai_compat"
 
 
+def make_embedding_manager(settings: Settings, *, write_model: bool = True) -> EmbeddingManager:
+    if write_model:
+        settings.embedding_model_path.mkdir(parents=True, exist_ok=True)
+        (settings.embedding_model_path / "config.json").write_text("{}", encoding="utf-8")
+    return EmbeddingManager(
+        settings,
+        backend_factory=lambda model_path, active_settings: HashEmbeddingBackend(
+            dimensions=active_settings.embedding_dimensions
+        ),
+    )
+
+
 def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
     settings = Settings(
         model_dir=tmp_path,
@@ -52,22 +65,46 @@ def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool
         return EchoBackend()
 
     manager = ModelManager(settings, backend_factory=backend_factory)
+    embedding_manager = make_embedding_manager(settings)
     if write_model:
         (settings.model_path.parent).mkdir(parents=True, exist_ok=True)
         settings.model_path.write_bytes(b"test-model")
         if settings.mmproj_path:
             settings.mmproj_path.write_bytes(b"test-mmproj")
-    return TestClient(create_app(settings=settings, manager=manager))
+    return TestClient(create_app(settings=settings, manager=manager, embedding_manager=embedding_manager))
 
 
 def make_client_with_backend(tmp_path: Path, backend: EchoBackend) -> TestClient:
     settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json", idle_unload_seconds=0)
     manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: backend)
+    embedding_manager = make_embedding_manager(settings)
     settings.model_path.parent.mkdir(parents=True, exist_ok=True)
     settings.model_path.write_bytes(b"test-model")
     if settings.mmproj_path:
         settings.mmproj_path.write_bytes(b"test-mmproj")
-    return TestClient(create_app(settings=settings, manager=manager))
+    return TestClient(create_app(settings=settings, manager=manager, embedding_manager=embedding_manager))
+
+
+def make_embedding_client(
+    tmp_path: Path,
+    *,
+    write_model: bool = True,
+    auto_download: bool = True,
+) -> TestClient:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        embedding_idle_unload_seconds=0,
+        embedding_auto_download=auto_download,
+    )
+    manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"test-model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"test-mmproj")
+    embedding_manager = make_embedding_manager(settings, write_model=write_model)
+    return TestClient(create_app(settings=settings, manager=manager, embedding_manager=embedding_manager))
 
 
 def sse_payloads(response) -> list[Any]:
@@ -523,6 +560,10 @@ def test_live_smoke_text_stack() -> None:
             client.post("/v1/local/models/load", json={"download_if_missing": live_download_if_missing()}),
             "local.models.load",
         )
+        assert_live_ok(
+            client.post("/v1/local/embeddings/load", json={"download_if_missing": live_download_if_missing()}),
+            "local.embeddings.load",
+        )
         chat = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hello"}]})
         assert_live_ok(chat, "chat.completions")
         assert chat.json()["object"] == "chat.completion"
@@ -593,12 +634,12 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     models = client.get("/v1/models").json()
     assert models["object"] == "list"
     assert models["data"][0]["id"] == "gemma-4-e4b-it-q4_k_m"
-    assert any(model["id"] == "laas-hash-embedding" for model in models["data"])
+    assert any(model["id"] == "bge-small-en-v1.5" for model in models["data"])
     assert any(model["id"] == "sdxl-turbo" for model in models["data"])
     assert any(model["id"] == "sd-1.5-inpainting" for model in models["data"])
 
-    embedding_model = client.get("/v1/models/laas-hash-embedding").json()
-    assert embedding_model["id"] == "laas-hash-embedding"
+    embedding_model = client.get("/v1/models/bge-small-en-v1.5").json()
+    assert embedding_model["id"] == "bge-small-en-v1.5"
     image_model = client.get("/v1/models/sdxl-turbo").json()
     assert image_model["id"] == "sdxl-turbo"
     image_edit_model = client.get("/v1/models/sd-1.5-inpainting").json()
@@ -639,12 +680,12 @@ def test_embeddings_endpoint_supports_float_and_base64(tmp_path: Path) -> None:
 
     response = client.post(
         "/v1/embeddings",
-        json={"model": "laas-hash-embedding", "input": ["alpha", "beta"], "dimensions": 8},
+        json={"model": "bge-small-en-v1.5", "input": ["alpha", "beta"], "dimensions": 8},
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload["object"] == "list"
-    assert payload["model"] == "laas-hash-embedding"
+    assert payload["model"] == "bge-small-en-v1.5"
     assert len(payload["data"]) == 2
     assert payload["data"][0]["object"] == "embedding"
     assert payload["data"][0]["index"] == 0
@@ -666,6 +707,77 @@ def test_embeddings_endpoint_validates_inputs(tmp_path: Path) -> None:
     assert empty.status_code == 400
     unknown_model = client.post("/v1/embeddings", json={"model": "missing", "input": "hello"})
     assert unknown_model.status_code == 404
+
+
+def test_embedding_status_load_and_unload(tmp_path: Path) -> None:
+    client = make_embedding_client(tmp_path)
+
+    status = client.get("/v1/local/embeddings/status").json()
+    assert status["configured_model"] == "bge-small-en-v1.5"
+    assert status["hf_repo_id"] == "BAAI/bge-small-en-v1.5"
+    assert status["downloaded"] is True
+    assert status["is_loaded"] is False
+    assert status["dimensions"] == 384
+
+    loaded = client.post("/v1/local/embeddings/load", json={}).json()
+    assert loaded["is_loaded"] is True
+    assert loaded["loaded_model"] == "bge-small-en-v1.5"
+
+    response = client.post("/v1/embeddings", json={"input": "alpha", "dimensions": 8})
+    assert response.status_code == 200
+    assert len(response.json()["data"][0]["embedding"]) == 8
+
+    unloaded = client.post("/v1/local/embeddings/unload").json()
+    assert unloaded["is_loaded"] is False
+
+
+def test_embedding_missing_model_requires_download(tmp_path: Path) -> None:
+    client = make_embedding_client(tmp_path, write_model=False, auto_download=False)
+
+    load_response = client.post("/v1/local/embeddings/load", json={"download_if_missing": False})
+    assert load_response.status_code == 409
+    assert load_response.json()["detail"]["error"]["code"] == "embedding_model_not_downloaded"
+
+    embedding_response = client.post("/v1/embeddings", json={"input": "alpha"})
+    assert embedding_response.status_code == 409
+    assert embedding_response.json()["detail"]["error"]["code"] == "embedding_model_not_downloaded"
+
+
+def test_embedding_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
+    client = make_embedding_client(tmp_path, write_model=False, auto_download=False)
+
+    def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        path = Path(local_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "config.json").write_text("{}", encoding="utf-8")
+        return str(path)
+
+    monkeypatch.setattr("laas.embedding.snapshot_download", fake_snapshot_download)
+    response = client.post("/v1/local/embeddings/download", json={})
+
+    assert response.status_code == 200
+    assert response.json()["model_id"] == "bge-small-en-v1.5"
+    assert response.json()["downloaded"] is True
+    assert client.get("/v1/local/embeddings/status").json()["downloaded"] is True
+
+
+def test_embedding_auto_downloads_for_openai_client_path(tmp_path: Path, monkeypatch) -> None:
+    client = make_embedding_client(tmp_path, write_model=False, auto_download=True)
+
+    def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        path = Path(local_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "config.json").write_text("{}", encoding="utf-8")
+        return str(path)
+
+    monkeypatch.setattr("laas.embedding.snapshot_download", fake_snapshot_download)
+    response = client.post("/v1/embeddings", json={"input": "alpha", "dimensions": 8})
+
+    assert response.status_code == 200
+    assert len(response.json()["data"][0]["embedding"]) == 8
+    status = client.get("/v1/local/embeddings/status").json()
+    assert status["downloaded"] is True
+    assert status["is_loaded"] is True
 
 
 def test_image_generation_status_load_generate_and_unload(tmp_path: Path) -> None:

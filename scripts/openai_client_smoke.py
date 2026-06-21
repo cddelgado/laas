@@ -14,7 +14,7 @@ def main() -> int:
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="LAAS server URL, with or without /v1.")
     parser.add_argument("--api-key", default="laas-local", help="Dummy API key accepted by local OpenAI clients.")
     parser.add_argument("--text-model", default="gemma-4-e4b-it-q4_k_m")
-    parser.add_argument("--embedding-model", default="laas-hash-embedding")
+    parser.add_argument("--embedding-model", default="bge-small-en-v1.5")
     parser.add_argument("--image-model", default="sdxl-turbo")
     parser.add_argument("--image-edit-model", default="sd-1.5-inpainting")
     parser.add_argument("--tts-model", default="tts-1")

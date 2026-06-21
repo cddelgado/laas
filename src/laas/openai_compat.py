@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
-import math
-import struct
 import time
 import uuid
 from typing import Any, Iterable
@@ -12,6 +8,7 @@ from typing import Any, Iterable
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from .embedding import EmbeddingManager, EmbeddingNotDownloadedError, encode_embedding, estimate_tokens
 from .errors import openai_error
 from .manager import ModelManager, ModelNotDownloadedError
 from .multimodal import normalize_chat_messages, normalize_content_parts
@@ -19,7 +16,7 @@ from .schemas import ChatCompletionRequest, CompletionRequest, EmbeddingRequest,
 from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup, validate_tool_choice
 
 
-def build_openai_router(manager: ModelManager) -> APIRouter:
+def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManager) -> APIRouter:
     router = APIRouter(prefix="/v1")
     response_store: dict[str, dict[str, Any]] = {}
 
@@ -33,9 +30,9 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
                     owned_by="google-local-gguf",
                 ),
                 OpenAIModel(
-                    id=manager.settings.embedding_model_id,
+                    id=embedding_manager.settings.embedding_model_id,
                     created=1712966400,
-                    owned_by="laas-local",
+                    owned_by="sentence-transformers-local",
                 ),
                 OpenAIModel(
                     id=manager.settings.image_model_id,
@@ -54,7 +51,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
     def retrieve_model(model_id: str) -> dict[str, Any]:
         known_models = {
             manager.settings.model_id,
-            manager.settings.embedding_model_id,
+            embedding_manager.settings.embedding_model_id,
             manager.settings.image_model_id,
             manager.settings.image_edit_model_id,
         }
@@ -67,7 +64,7 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
         elif model_id == manager.settings.image_edit_model_id:
             owned_by = "stability-local-diffusers"
         else:
-            owned_by = "laas-local"
+            owned_by = "sentence-transformers-local"
         return OpenAIModel(id=model_id, created=1712966400, owned_by=owned_by).model_dump()
 
     @router.post("/chat/completions")
@@ -208,20 +205,34 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
 
     @router.post("/embeddings")
     def create_embedding(request: EmbeddingRequest) -> dict[str, Any]:
-        model_id = request.model or manager.settings.embedding_model_id
-        if model_id != manager.settings.embedding_model_id:
+        model_id = request.model or embedding_manager.settings.embedding_model_id
+        if model_id != embedding_manager.settings.embedding_model_id:
             raise openai_error(404, f"The embedding model '{model_id}' does not exist", param="model", code="model_not_found")
         inputs = _normalize_embedding_inputs(request.input)
-        dimensions = request.dimensions or manager.settings.embedding_dimensions
+        dimensions = request.dimensions or embedding_manager.settings.embedding_dimensions
+        try:
+            vectors = embedding_manager.embed(inputs, dimensions=dimensions)
+        except EmbeddingNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured embedding model is not downloaded. Call POST /v1/local/embeddings/download and "
+                "POST /v1/local/embeddings/load first, or set LAAS_EMBEDDING_AUTO_DOWNLOAD=true to allow "
+                "LAAS to download missing embedding assets during load.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="embedding_model_not_downloaded",
+            ) from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="embedding_backend_missing") from exc
         data = [
             {
                 "object": "embedding",
                 "index": index,
-                "embedding": _encode_embedding(_hash_embedding(value, dimensions), request.encoding_format),
+                "embedding": encode_embedding(vector, request.encoding_format),
             }
-            for index, value in enumerate(inputs)
+            for index, vector in enumerate(vectors)
         ]
-        prompt_tokens = sum(_estimate_tokens(value) for value in inputs)
+        prompt_tokens = sum(estimate_tokens(value) for value in inputs)
         return {
             "object": "list",
             "data": data,
@@ -692,32 +703,6 @@ def _normalize_embedding_inputs(value: Any) -> list[str]:
     if all(isinstance(item, list) and all(isinstance(token, int) for token in item) for item in value):
         return [" ".join(str(token) for token in item) for item in value]
     raise openai_error(400, "input must be a string, array of strings, token array, or array of token arrays", param="input")
-
-
-def _hash_embedding(value: str, dimensions: int) -> list[float]:
-    values: list[float] = []
-    counter = 0
-    while len(values) < dimensions:
-        digest = hashlib.sha256(f"{value}\0{counter}".encode("utf-8")).digest()
-        for offset in range(0, len(digest), 4):
-            integer = int.from_bytes(digest[offset : offset + 4], "big", signed=False)
-            values.append((integer / 0xFFFFFFFF) * 2.0 - 1.0)
-            if len(values) == dimensions:
-                break
-        counter += 1
-    magnitude = math.sqrt(sum(item * item for item in values)) or 1.0
-    return [item / magnitude for item in values]
-
-
-def _encode_embedding(vector: list[float], encoding_format: str) -> list[float] | str:
-    if encoding_format == "float":
-        return vector
-    packed = b"".join(struct.pack("<f", value) for value in vector)
-    return base64.b64encode(packed).decode("ascii")
-
-
-def _estimate_tokens(value: str) -> int:
-    return max(1, len(value.split()))
 
 
 def _sse(chunks: Any) -> StreamingResponse:

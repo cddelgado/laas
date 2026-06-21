@@ -42,6 +42,10 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/transcription/download`
 - `POST /v1/local/transcription/load`
 - `POST /v1/local/transcription/unload`
+- `GET /v1/local/embeddings/status`
+- `POST /v1/local/embeddings/download`
+- `POST /v1/local/embeddings/load`
+- `POST /v1/local/embeddings/unload`
 - `GET /v1/local/voice/status`
 - `POST /v1/local/voice/download`
 - `POST /v1/local/voice/load`
@@ -218,8 +222,13 @@ LAAS_STT_MODEL_FILENAME=ggml-small.bin
 LAAS_STT_AUTO_DOWNLOAD=false
 LAAS_VOICE_AUTO_LOAD=false
 LAAS_VOICE_AUTO_DOWNLOAD=false
-LAAS_EMBEDDING_MODEL_ID=laas-hash-embedding
+LAAS_EMBEDDING_MODEL_ID=bge-small-en-v1.5
+LAAS_EMBEDDING_HF_REPO_ID=BAAI/bge-small-en-v1.5
 LAAS_EMBEDDING_DIMENSIONS=384
+LAAS_EMBEDDING_AUTO_LOAD=false
+LAAS_EMBEDDING_AUTO_DOWNLOAD=true
+LAAS_EMBEDDING_IDLE_UNLOAD_SECONDS=900
+LAAS_EMBEDDING_DEVICE=auto
 LAAS_IMAGE_MODEL_ID=sdxl-turbo
 LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
 LAAS_IMAGE_DEFAULT_SIZE=768x768
@@ -744,17 +753,27 @@ second = client.responses.create(
 Set `store=False` for one-off responses that should not be retrievable. Stored
 responses are process-local and disappear when the server restarts.
 
-The local embeddings endpoint exposes `laas-hash-embedding`. It is deterministic
-and OpenAI-shape-compatible for local development, but it is not a semantic
-embedding model:
+The local embeddings endpoint exposes `bge-small-en-v1.5` by default using
+`BAAI/bge-small-en-v1.5` through Sentence Transformers. It downloads to
+`LAAS_MODEL_DIR` like the other local model stacks and unloads after
+`LAAS_EMBEDDING_IDLE_UNLOAD_SECONDS` seconds of inactivity.
 
 ```python
 embedding = client.embeddings.create(
-    model="laas-hash-embedding",
+    model="bge-small-en-v1.5",
     input=["alpha", "beta"],
     dimensions=128,
 )
 print(len(embedding.data[0].embedding))
+```
+
+Manual embedding lifecycle endpoints:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/embeddings/status
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/download -Body "{}" -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/load -Body "{}" -ContentType "application/json"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/unload
 ```
 
 ## Compatibility Testing

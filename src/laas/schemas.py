@@ -66,6 +66,19 @@ class LocalVoiceStackStatus(BaseModel):
     is_loaded: bool
 
 
+class LocalEmbeddingStatus(BaseModel):
+    configured_model: str
+    loaded_model: str | None
+    is_loaded: bool
+    model_path: str
+    downloaded: bool
+    hf_repo_id: str
+    dimensions: int
+    device: str
+    idle_unload_seconds: int
+    last_used_at: float | None = None
+
+
 class LocalImageStatus(BaseModel):
     configured_model: str
     loaded_model: str | None
@@ -136,6 +149,17 @@ class DownloadImageRequest(BaseModel):
 
 
 class LoadImageRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+    download_if_missing: bool = True
+
+
+class DownloadEmbeddingRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+
+
+class LoadEmbeddingRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
     download_if_missing: bool = True
@@ -368,7 +392,12 @@ class SettingsPatch(BaseModel):
     voice_auto_load: bool | None = None
     voice_auto_download: bool | None = None
     embedding_model_id: str | None = None
+    embedding_hf_repo_id: str | None = None
     embedding_dimensions: int | None = Field(default=None, gt=0)
+    embedding_auto_load: bool | None = None
+    embedding_auto_download: bool | None = None
+    embedding_idle_unload_seconds: int | None = Field(default=None, ge=0)
+    embedding_device: str | None = None
     image_model_id: str | None = None
     image_hf_repo_id: str | None = None
     image_default_size: str | None = None

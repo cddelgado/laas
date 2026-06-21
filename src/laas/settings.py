@@ -62,8 +62,13 @@ class Settings(BaseSettings):
     stt_idle_unload_seconds: int = 900
     voice_auto_load: bool = False
     voice_auto_download: bool = False
-    embedding_model_id: str = "laas-hash-embedding"
+    embedding_model_id: str = "bge-small-en-v1.5"
+    embedding_hf_repo_id: str = "BAAI/bge-small-en-v1.5"
     embedding_dimensions: int = 384
+    embedding_auto_load: bool = False
+    embedding_auto_download: bool = True
+    embedding_idle_unload_seconds: int = 900
+    embedding_device: str = "auto"
     image_model_id: str = "sdxl-turbo"
     image_hf_repo_id: str = "stabilityai/sdxl-turbo"
     image_default_size: str = "768x768"
@@ -134,6 +139,10 @@ class Settings(BaseSettings):
         return self.model_dir / self.image_hf_repo_id.replace("/", "__")
 
     @property
+    def embedding_model_path(self) -> Path:
+        return self.model_dir / self.embedding_hf_repo_id.replace("/", "__")
+
+    @property
     def image_edit_model_path(self) -> Path:
         return self.model_dir / self.image_edit_hf_repo_id.replace("/", "__")
 
@@ -179,7 +188,12 @@ class Settings(BaseSettings):
             "voice_auto_load": self.voice_auto_load,
             "voice_auto_download": self.voice_auto_download,
             "embedding_model_id": self.embedding_model_id,
+            "embedding_hf_repo_id": self.embedding_hf_repo_id,
             "embedding_dimensions": self.embedding_dimensions,
+            "embedding_auto_load": self.embedding_auto_load,
+            "embedding_auto_download": self.embedding_auto_download,
+            "embedding_idle_unload_seconds": self.embedding_idle_unload_seconds,
+            "embedding_device": self.embedding_device,
             "image_model_id": self.image_model_id,
             "image_hf_repo_id": self.image_hf_repo_id,
             "image_default_size": self.image_default_size,

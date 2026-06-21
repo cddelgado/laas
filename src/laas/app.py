@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, File, Form, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
+from .embedding import EmbeddingManager, EmbeddingNotDownloadedError
 from .errors import openai_error
 from .image import (
     ImageEditManager,
@@ -33,9 +34,11 @@ from .openai_compat import _normalize_chat_response, build_openai_router
 from .schemas import (
     CreateVoiceSessionRequest,
     DownloadAudioRequest,
+    DownloadEmbeddingRequest,
     DownloadImageRequest,
     DownloadModelRequest,
     DownloadTranscriptionRequest,
+    LoadEmbeddingRequest,
     ImageGenerationRequest,
     LoadAudioRequest,
     LoadImageRequest,
@@ -60,6 +63,7 @@ def create_app(
     manager: ModelManager | None = None,
     audio_manager: AudioManager | None = None,
     transcription_manager: TranscriptionManager | None = None,
+    embedding_manager: EmbeddingManager | None = None,
     image_manager: ImageManager | None = None,
     image_edit_manager: ImageEditManager | None = None,
 ) -> FastAPI:
@@ -67,6 +71,7 @@ def create_app(
     active_manager = manager or ModelManager(active_settings)
     active_audio_manager = audio_manager or AudioManager(active_settings)
     active_transcription_manager = transcription_manager or TranscriptionManager(active_settings)
+    active_embedding_manager = embedding_manager or EmbeddingManager(active_settings)
     active_image_manager = image_manager or ImageManager(active_settings)
     active_image_edit_manager = image_edit_manager or ImageEditManager(active_settings)
 
@@ -93,6 +98,11 @@ def create_app(
                 active_transcription_manager.load(download_if_missing=active_settings.stt_auto_download)
             except TranscriptionNotDownloadedError:
                 pass
+        if active_settings.embedding_auto_load:
+            try:
+                active_embedding_manager.load(download_if_missing=active_settings.embedding_auto_download)
+            except EmbeddingNotDownloadedError:
+                pass
         if active_settings.image_auto_load:
             try:
                 active_image_manager.load(download_if_missing=active_settings.image_auto_download)
@@ -115,6 +125,7 @@ def create_app(
     app.state.manager = active_manager
     app.state.audio_manager = active_audio_manager
     app.state.transcription_manager = active_transcription_manager
+    app.state.embedding_manager = active_embedding_manager
     app.state.image_manager = active_image_manager
     app.state.image_edit_manager = active_image_edit_manager
     app.state.voice_sessions = {}
@@ -162,6 +173,7 @@ def create_app(
             "model_loaded": active_manager.is_loaded,
             "audio_model_loaded": active_audio_manager.is_loaded,
             "transcription_model_loaded": active_transcription_manager.is_loaded,
+            "embedding_model_loaded": active_embedding_manager.is_loaded,
             "voice_stack_loaded": active_audio_manager.is_loaded and active_transcription_manager.is_loaded,
             "image_model_loaded": active_image_manager.is_loaded,
             "image_edit_model_loaded": active_image_edit_manager.is_loaded,
@@ -237,19 +249,61 @@ def create_app(
         text = active_manager.unload().model_dump()
         audio = active_audio_manager.unload().model_dump()
         transcription = active_transcription_manager.unload().model_dump()
+        embeddings = active_embedding_manager.unload().model_dump()
         images = unload_all_image_models()
         return {
             "text": text,
             "audio": audio,
             "transcription": transcription,
+            "embeddings": embeddings,
             "images": images,
             "is_loaded": (
                 text["is_loaded"]
                 or audio["is_loaded"]
                 or transcription["is_loaded"]
+                or embeddings["is_loaded"]
                 or images["is_loaded"]
             ),
         }
+
+    @app.get("/v1/local/embeddings/status")
+    def embedding_status() -> dict[str, Any]:
+        return active_embedding_manager.status().model_dump()
+
+    @app.post("/v1/local/embeddings/download")
+    def download_embedding_model(request: DownloadEmbeddingRequest) -> dict[str, Any]:
+        if request.hf_repo_id:
+            active_settings.embedding_hf_repo_id = request.hf_repo_id
+        path = active_embedding_manager.download()
+        return {
+            "model_id": request.model_id or active_settings.embedding_model_id,
+            "path": str(path),
+            "downloaded": True,
+        }
+
+    @app.post("/v1/local/embeddings/load")
+    def load_embedding_model(request: LoadEmbeddingRequest) -> dict[str, Any]:
+        try:
+            return active_embedding_manager.load(
+                model_id=request.model_id,
+                hf_repo_id=request.hf_repo_id,
+                download_if_missing=request.download_if_missing,
+            ).model_dump()
+        except EmbeddingNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured embedding model is not downloaded. Call POST /v1/local/embeddings/download first, "
+                "or retry POST /v1/local/embeddings/load with download_if_missing=true.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="embedding_model_not_downloaded",
+            ) from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="embedding_backend_missing") from exc
+
+    @app.post("/v1/local/embeddings/unload")
+    def unload_embedding_model() -> dict[str, Any]:
+        return active_embedding_manager.unload().model_dump()
 
     @app.get("/v1/local/images/status")
     def image_status() -> dict[str, Any]:
@@ -1258,7 +1312,7 @@ def create_app(
             return PlainTextResponse(str(payload), media_type="text/vtt")
         return payload
 
-    app.include_router(build_openai_router(active_manager))
+    app.include_router(build_openai_router(active_manager, active_embedding_manager))
     return app
 
 

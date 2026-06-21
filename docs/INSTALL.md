@@ -47,10 +47,18 @@ python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 ```
 
+Embeddings:
+
+```bash
+python -m pip install -r requirements-embeddings.txt
+python -m pip install -e .
+```
+
 Equivalent `pyproject.toml` extras install:
 
 ```bash
 python -m pip install -e ".[dev]"
+python -m pip install -e ".[embeddings]"
 ```
 
 The requirements files are present so contributors and packagers can see the
@@ -665,6 +673,45 @@ The model is downloaded when either:
 By default, `LAAS_AUTO_LOAD=false` and `LAAS_AUTO_DOWNLOAD=false`. Starting the
 API does not download or load the model until you explicitly ask it to.
 Inference requests return `model_not_downloaded` when the model file is missing.
+
+The embedding stack is separate from the Gemma GGUF. By default LAAS exposes
+`bge-small-en-v1.5` from `BAAI/bge-small-en-v1.5` through Sentence Transformers.
+Install `requirements-embeddings.txt` or the `embeddings` extra before using the
+real backend. The model downloads under `LAAS_MODEL_DIR`.
+
+By default, `LAAS_EMBEDDING_AUTO_LOAD=false` and
+`LAAS_EMBEDDING_AUTO_DOWNLOAD=true`. That means a normal OpenAI-compatible
+`POST /v1/embeddings` request can download and load the embedding model on first
+use. To require manual confirmation, set `LAAS_EMBEDDING_AUTO_DOWNLOAD=false`
+and use the local lifecycle endpoints:
+
+Windows PowerShell:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/embeddings/status
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/download `
+  -ContentType "application/json" `
+  -Body "{}"
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/load `
+  -ContentType "application/json" `
+  -Body "{}"
+```
+
+macOS/Linux:
+
+```bash
+curl http://127.0.0.1:8000/v1/local/embeddings/status
+
+curl -X POST http://127.0.0.1:8000/v1/local/embeddings/download \
+  -H "Content-Type: application/json" \
+  -d "{}"
+
+curl -X POST http://127.0.0.1:8000/v1/local/embeddings/load \
+  -H "Content-Type: application/json" \
+  -d "{}"
+```
 
 Gemma 4 multimodal requests require a projector. The default Q4 main model uses
 `mmproj-gemma-4-E4B-it-Q8_0.gguf` because the repo currently publishes Q8 and
