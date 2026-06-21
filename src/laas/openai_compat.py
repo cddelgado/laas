@@ -96,13 +96,28 @@ COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
         "notes": "Local SQLite metadata and chunk store with embedding-backed cosine search.",
     },
     {
-        "surface": "Uploads, Batches, Fine-tuning, Moderations",
+        "surface": "Batches",
+        "status": "supported",
+        "endpoints": [
+            "POST /v1/batches",
+            "GET /v1/batches",
+            "GET /v1/batches/{batch_id}",
+            "POST /v1/batches/{batch_id}/cancel",
+        ],
+        "notes": "Local JSONL batch runner for supported local endpoints, starting with embeddings.",
+    },
+    {
+        "surface": "Moderations",
+        "status": "supported",
+        "endpoints": ["POST /v1/moderations"],
+        "notes": "Rule-backed local compatibility endpoint for deterministic local checks.",
+    },
+    {
+        "surface": "Uploads, Fine-tuning",
         "status": "unsupported",
         "endpoints": [
             "/v1/uploads",
-            "/v1/batches",
             "/v1/fine_tuning/jobs",
-            "/v1/moderations",
         ],
         "notes": "These cloud/account or hosted-storage APIs are not implemented by the local inference host.",
     },
@@ -123,6 +138,7 @@ def build_openai_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/v1")
     response_store: dict[str, dict[str, Any]] = {}
+    batch_store: dict[str, dict[str, Any]] = {}
     active_storage = storage or LocalStorage(manager.settings, embedding_manager)
 
     @router.get("/models", response_model=ModelList)
@@ -181,6 +197,9 @@ def build_openai_router(
             video_config=_video_config(manager.settings),
         )
         tools = normalize_tools_for_responses(request.tools)
+        backend_tools, file_search_tools = _split_file_search_tools(tools)
+        file_search = _file_search_context(active_storage, file_search_tools, messages)
+        messages = _with_file_search_context(messages, file_search)
         acquired = False
         try:
             if coordinator:
@@ -189,14 +208,20 @@ def build_openai_router(
                     acquired = True
                 else:
                     with coordinator.execute("llm"):
-                        return _chat_completion_with_backend(request, manager, messages, tools)
+                        return _chat_completion_with_backend(
+                            request,
+                            manager,
+                            messages,
+                            backend_tools,
+                            file_search=file_search,
+                        )
             else:
-                return _chat_completion_with_backend(request, manager, messages, tools)
+                return _chat_completion_with_backend(request, manager, messages, backend_tools, file_search=file_search)
             backend = _get_backend(manager)
             result = backend.chat_completion(
                 messages=messages,
                 model=manager.settings.model_id,
-                tools=tools,
+                tools=backend_tools,
                 tool_choice=request.tool_choice,
                 temperature=request.temperature,
                 top_p=request.top_p,
@@ -205,12 +230,18 @@ def build_openai_router(
                 extra_params=_chat_sampling_params(request),
             )
             if request.stream:
-                chunks = _normalize_chat_stream(result, manager.settings.model_id, tools, request.tool_choice)
+                chunks = _normalize_chat_stream(result, manager.settings.model_id, backend_tools, request.tool_choice)
                 if coordinator:
                     chunks = coordinator.wrap_stream("llm", chunks)
                     acquired = False
                 return _sse(chunks)
-            return _normalize_chat_response(result, manager.settings.model_id, tools, request.tool_choice)
+            return _normalize_chat_response(
+                result,
+                manager.settings.model_id,
+                backend_tools,
+                request.tool_choice,
+                file_search=file_search,
+            )
         except ModelNotDownloadedError as exc:
             raise openai_error(
                 409,
@@ -320,6 +351,10 @@ def build_openai_router(
             [message.model_dump(exclude_none=True) for message in chat_request.messages],
             video_config=_video_config(manager.settings),
         )
+        backend_tools, file_search_tools = _split_file_search_tools(chat_request.tools)
+        chat_request.tools = backend_tools
+        file_search = _file_search_context(active_storage, file_search_tools, normalized_messages)
+        normalized_messages = _with_file_search_context(normalized_messages, file_search)
         acquired = False
         try:
             if coordinator:
@@ -328,9 +363,23 @@ def build_openai_router(
                     acquired = True
                 else:
                     with coordinator.execute("llm"):
-                        return _response_with_backend(request, chat_request, manager, normalized_messages, response_store)
+                        return _response_with_backend(
+                            request,
+                            chat_request,
+                            manager,
+                            normalized_messages,
+                            response_store,
+                            file_search=file_search,
+                        )
             else:
-                return _response_with_backend(request, chat_request, manager, normalized_messages, response_store)
+                return _response_with_backend(
+                    request,
+                    chat_request,
+                    manager,
+                    normalized_messages,
+                    response_store,
+                    file_search=file_search,
+                )
             result = _get_backend(manager).chat_completion(
                 messages=normalized_messages,
                 model=manager.settings.model_id,
@@ -354,8 +403,14 @@ def build_openai_router(
                     chunks = coordinator.wrap_stream("llm", chunks)
                     acquired = False
                 return _sse(chunks)
-            chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools, chat_request.tool_choice)
-            response = _chat_to_response(chat_response, request, manager.settings.model_id)
+            chat_response = _normalize_chat_response(
+                result,
+                manager.settings.model_id,
+                chat_request.tools,
+                chat_request.tool_choice,
+                file_search=file_search,
+            )
+            response = _chat_to_response(chat_response, request, manager.settings.model_id, file_search=file_search)
             if request.store:
                 response_store[response["id"]] = {
                     "response": response,
@@ -528,8 +583,11 @@ def build_openai_router(
         file_id = payload.get("file_id")
         if not isinstance(file_id, str) or not file_id:
             raise openai_error(400, "file_id is required", param="file_id")
+        wait = bool(payload.get("wait", True))
         try:
-            return active_storage.attach_file(vector_store_id=vector_store_id, file_id=file_id)
+            if wait:
+                return active_storage.attach_file(vector_store_id=vector_store_id, file_id=file_id)
+            return active_storage.attach_file_async(vector_store_id=vector_store_id, file_id=file_id)
         except LocalFileNotFoundError as exc:
             raise openai_error(404, f"The file '{file_id}' does not exist", param="file_id", code="file_not_found") from exc
         except VectorStoreNotFoundError as exc:
@@ -603,6 +661,80 @@ def build_openai_router(
         except RuntimeError as exc:
             raise openai_error(503, str(exc), type_="server_error", code="embedding_backend_missing") from exc
 
+    @router.get("/local/vector_stores/{vector_store_id}/indexing/status")
+    def vector_store_indexing_status(vector_store_id: str) -> dict[str, Any]:
+        try:
+            return active_storage.vector_store_indexing_status(vector_store_id)
+        except VectorStoreNotFoundError as exc:
+            raise openai_error(
+                404,
+                f"The vector store '{vector_store_id}' does not exist",
+                code="vector_store_not_found",
+            ) from exc
+
+    @router.post("/batches")
+    def create_batch(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        input_file_id = payload.get("input_file_id")
+        endpoint = payload.get("endpoint")
+        if not isinstance(input_file_id, str) or not input_file_id:
+            raise openai_error(400, "input_file_id is required", param="input_file_id")
+        if endpoint != "/v1/embeddings":
+            raise openai_error(400, "only endpoint=/v1/embeddings is currently supported", param="endpoint")
+        try:
+            batch = _run_embedding_batch(
+                active_storage=active_storage,
+                embedding_manager=embedding_manager,
+                input_file_id=input_file_id,
+                endpoint=endpoint,
+                completion_window=str(payload.get("completion_window") or "24h"),
+                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+            )
+        except LocalFileNotFoundError as exc:
+            raise openai_error(404, f"The file '{input_file_id}' does not exist", param="input_file_id", code="file_not_found") from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="input_file_id") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="batch_failed") from exc
+        batch_store[batch["id"]] = batch
+        return batch
+
+    @router.get("/batches")
+    def list_batches() -> dict[str, Any]:
+        data = sorted(batch_store.values(), key=lambda item: item["created_at"], reverse=True)
+        return {"object": "list", "data": data, "has_more": False}
+
+    @router.get("/batches/{batch_id}")
+    def retrieve_batch(batch_id: str) -> dict[str, Any]:
+        batch = batch_store.get(batch_id)
+        if not batch:
+            raise openai_error(404, f"The batch '{batch_id}' does not exist", code="batch_not_found")
+        return batch
+
+    @router.post("/batches/{batch_id}/cancel")
+    def cancel_batch(batch_id: str) -> dict[str, Any]:
+        batch = batch_store.get(batch_id)
+        if not batch:
+            raise openai_error(404, f"The batch '{batch_id}' does not exist", code="batch_not_found")
+        if batch["status"] not in {"completed", "failed", "cancelled"}:
+            batch["status"] = "cancelled"
+            batch["cancelled_at"] = int(time.time())
+        return batch
+
+    @router.post("/moderations")
+    def create_moderation(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        raw_input = payload.get("input")
+        if isinstance(raw_input, str):
+            inputs = [raw_input]
+        elif isinstance(raw_input, list) and all(isinstance(item, str) for item in raw_input):
+            inputs = raw_input
+        else:
+            raise openai_error(400, "input must be a string or array of strings", param="input")
+        return {
+            "id": f"modr_{uuid.uuid4().hex}",
+            "model": payload.get("model") or "laas-rule-moderation",
+            "results": [_moderation_result(value) for value in inputs],
+        }
+
     register_unsupported_routes(router)
     return router
 
@@ -611,13 +743,9 @@ def register_unsupported_routes(router: APIRouter) -> None:
     unsupported_routes = [
         ("/uploads", ["POST"], "Uploads"),
         ("/uploads/{upload_id}", ["GET", "POST", "DELETE"], "Uploads"),
-        ("/batches", ["GET", "POST"], "Batches"),
-        ("/batches/{batch_id}", ["GET"], "Batches"),
-        ("/batches/{batch_id}/cancel", ["POST"], "Batches"),
         ("/fine_tuning/jobs", ["GET", "POST"], "Fine-tuning"),
         ("/fine_tuning/jobs/{job_id}", ["GET"], "Fine-tuning"),
         ("/fine_tuning/jobs/{job_id}/cancel", ["POST"], "Fine-tuning"),
-        ("/moderations", ["POST"], "Moderations"),
     ]
     for path, methods, surface in unsupported_routes:
         router.add_api_route(
@@ -641,11 +769,238 @@ def _unsupported_route(surface: str):
     return route
 
 
+def _run_embedding_batch(
+    *,
+    active_storage: LocalStorage,
+    embedding_manager: EmbeddingManager,
+    input_file_id: str,
+    endpoint: str,
+    completion_window: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    input_path = active_storage.file_path(input_file_id)
+    lines = input_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if not lines:
+        raise ValueError("batch input file is empty")
+
+    output_lines: list[str] = []
+    failed = 0
+    completed = 0
+    for index, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+            custom_id = str(item.get("custom_id") or f"request-{index}")
+            body = item.get("body") if isinstance(item.get("body"), dict) else {}
+            inputs = _normalize_embedding_inputs(body.get("input"))
+            dimensions = body.get("dimensions") or embedding_manager.settings.embedding_dimensions
+            vectors = embedding_manager.embed(inputs, dimensions=dimensions)
+            data = [
+                {
+                    "object": "embedding",
+                    "index": vector_index,
+                    "embedding": encode_embedding(vector, body.get("encoding_format") or "float"),
+                }
+                for vector_index, vector in enumerate(vectors)
+            ]
+            prompt_tokens = sum(estimate_tokens(value) for value in inputs)
+            output_lines.append(
+                json.dumps(
+                    {
+                        "id": f"batch_req_{uuid.uuid4().hex}",
+                        "custom_id": custom_id,
+                        "response": {
+                            "status_code": 200,
+                            "request_id": f"req_{uuid.uuid4().hex}",
+                            "body": {
+                                "object": "list",
+                                "data": data,
+                                "model": embedding_manager.settings.embedding_model_id,
+                                "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+                            },
+                        },
+                        "error": None,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            completed += 1
+        except Exception as exc:
+            failed += 1
+            output_lines.append(
+                json.dumps(
+                    {
+                        "id": f"batch_req_{uuid.uuid4().hex}",
+                        "custom_id": f"request-{index}",
+                        "response": None,
+                        "error": {"message": str(exc), "type": "invalid_request_error"},
+                    },
+                    separators=(",", ":"),
+                )
+            )
+
+    created_at = int(time.time())
+    output = active_storage.create_file(
+        filename=f"batch_output_{uuid.uuid4().hex}.jsonl",
+        content=("\n".join(output_lines) + "\n").encode("utf-8"),
+        purpose="batch_output",
+        mime_type="application/jsonl",
+    )
+    batch_id = f"batch_{uuid.uuid4().hex}"
+    status = "completed" if failed == 0 else "failed"
+    return {
+        "id": batch_id,
+        "object": "batch",
+        "endpoint": endpoint,
+        "errors": None,
+        "input_file_id": input_file_id,
+        "completion_window": completion_window,
+        "status": status,
+        "output_file_id": output["id"],
+        "error_file_id": None,
+        "created_at": created_at,
+        "in_progress_at": created_at,
+        "expires_at": created_at + 86400,
+        "finalizing_at": created_at,
+        "completed_at": created_at if status == "completed" else None,
+        "failed_at": created_at if status == "failed" else None,
+        "expired_at": None,
+        "cancelling_at": None,
+        "cancelled_at": None,
+        "request_counts": {"total": completed + failed, "completed": completed, "failed": failed},
+        "metadata": metadata,
+    }
+
+
+def _moderation_result(value: str) -> dict[str, Any]:
+    categories = {
+        "sexual": _contains_any(value, {"sex", "sexual", "explicit", "porn"}),
+        "hate": _contains_any(value, {"racial slur", "genocide", "supremacy"}),
+        "harassment": _contains_any(value, {"idiot", "stupid", "harass", "bully"}),
+        "self-harm": _contains_any(value, {"self harm", "suicide", "kill myself"}),
+        "sexual/minors": _contains_any(value, {"minor sexual", "child sexual"}),
+        "hate/threatening": _contains_any(value, {"kill all", "exterminate"}),
+        "violence/graphic": _contains_any(value, {"gore", "dismember", "graphic violence"}),
+        "self-harm/intent": _contains_any(value, {"i will kill myself", "i want to die"}),
+        "self-harm/instructions": _contains_any(value, {"how to kill myself", "suicide method"}),
+        "harassment/threatening": _contains_any(value, {"i will hurt you", "i will kill you"}),
+        "violence": _contains_any(value, {"kill", "murder", "bomb", "stab", "shoot"}),
+    }
+    scores = {name: (0.92 if flagged else 0.01) for name, flagged in categories.items()}
+    return {"flagged": any(categories.values()), "categories": categories, "category_scores": scores}
+
+
+def _contains_any(value: str, needles: set[str]) -> bool:
+    lowered = value.lower()
+    return any(needle in lowered for needle in needles)
+
+
+def _split_file_search_tools(tools: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+    if not tools:
+        return tools, []
+    backend_tools = [tool for tool in tools if tool.get("type") != "file_search"]
+    file_search_tools = [tool for tool in tools if tool.get("type") == "file_search"]
+    return (backend_tools or None), file_search_tools
+
+
+def _file_search_context(
+    active_storage: LocalStorage,
+    file_search_tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not file_search_tools:
+        return None
+    query = _latest_user_text(messages)
+    if not query:
+        return None
+    results = []
+    for tool in file_search_tools:
+        store_ids = _file_search_vector_store_ids(tool)
+        limit = int(tool.get("max_num_results") or tool.get("limit") or 8)
+        for store_id in store_ids:
+            try:
+                search = active_storage.search_vector_store(vector_store_id=store_id, query=query, limit=limit)
+            except VectorStoreNotFoundError as exc:
+                raise openai_error(
+                    404,
+                    f"The vector store '{store_id}' does not exist",
+                    param="tools",
+                    code="vector_store_not_found",
+                ) from exc
+            except EmbeddingNotDownloadedError as exc:
+                raise openai_error(
+                    409,
+                    "The configured embedding model is not downloaded. Call POST /v1/local/embeddings/download first.",
+                    type_="invalid_request_error",
+                    param=exc.asset,
+                    code="embedding_model_not_downloaded",
+                ) from exc
+            for item in search["data"]:
+                result = dict(item)
+                result["vector_store_id"] = store_id
+                results.append(result)
+    results.sort(key=lambda item: item.get("score", 0.0), reverse=True)
+    return {"query": query, "results": results[:16]}
+
+
+def _file_search_vector_store_ids(tool: dict[str, Any]) -> list[str]:
+    raw = tool.get("vector_store_ids")
+    if raw is None and isinstance(tool.get("file_search"), dict):
+        raw = tool["file_search"].get("vector_store_ids")
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        return raw
+    return []
+
+
+def _latest_user_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text") or part.get("input_text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            if parts:
+                return "\n".join(parts)
+    return ""
+
+
+def _with_file_search_context(
+    messages: list[dict[str, Any]],
+    file_search: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not file_search or not file_search.get("results"):
+        return messages
+    excerpts = []
+    for index, item in enumerate(file_search["results"], start=1):
+        excerpts.append(
+            f"[{index}] file={item['filename']} file_id={item['file_id']} "
+            f"chunk={item['chunk_index']} score={item['score']:.3f}\n{item['text']}"
+        )
+    context = (
+        "Use the following local file search excerpts when they are relevant. "
+        "If the excerpts do not answer the user, say so and answer from general knowledge only when appropriate.\n\n"
+        + "\n\n".join(excerpts)
+    )
+    return [{"role": "system", "content": context}, *messages]
+
+
 def _chat_completion_with_backend(
     request: ChatCompletionRequest,
     manager: ModelManager,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
+    *,
+    file_search: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = _get_backend(manager).chat_completion(
         messages=messages,
@@ -658,7 +1013,7 @@ def _chat_completion_with_backend(
         stream=False,
         extra_params=_chat_sampling_params(request),
     )
-    return _normalize_chat_response(result, manager.settings.model_id, tools, request.tool_choice)
+    return _normalize_chat_response(result, manager.settings.model_id, tools, request.tool_choice, file_search=file_search)
 
 
 def _completion_with_backend(
@@ -684,6 +1039,8 @@ def _response_with_backend(
     manager: ModelManager,
     normalized_messages: list[dict[str, Any]],
     response_store: dict[str, dict[str, Any]],
+    *,
+    file_search: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = _get_backend(manager).chat_completion(
         messages=normalized_messages,
@@ -696,8 +1053,14 @@ def _response_with_backend(
         stream=False,
         extra_params=_chat_sampling_params(chat_request),
     )
-    chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools, chat_request.tool_choice)
-    response = _chat_to_response(chat_response, request, manager.settings.model_id)
+    chat_response = _normalize_chat_response(
+        result,
+        manager.settings.model_id,
+        chat_request.tools,
+        chat_request.tool_choice,
+        file_search=file_search,
+    )
+    response = _chat_to_response(chat_response, request, manager.settings.model_id, file_search=file_search)
     if request.store:
         response_store[response["id"]] = {
             "response": response,
@@ -933,6 +1296,8 @@ def _normalize_chat_response(
     model_id: str,
     tools: list[dict[str, Any]] | None,
     tool_choice: Any = "auto",
+    *,
+    file_search: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise openai_error(500, "backend returned an invalid response", type_="server_error")
@@ -952,6 +1317,8 @@ def _normalize_chat_response(
                 choice["finish_reason"] = "tool_calls"
         choice["message"] = message
     result.setdefault("usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    if file_search is not None:
+        result["laas_file_search"] = file_search
     return result
 
 
@@ -1124,7 +1491,13 @@ def _chat_stream_chunk(
     }
 
 
-def _chat_to_response(chat_response: dict[str, Any], request: ResponseRequest, model_id: str) -> dict[str, Any]:
+def _chat_to_response(
+    chat_response: dict[str, Any],
+    request: ResponseRequest,
+    model_id: str,
+    *,
+    file_search: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     choice = chat_response["choices"][0]
     message = choice["message"]
     output: list[dict[str, Any]] = []
@@ -1160,7 +1533,7 @@ def _chat_to_response(chat_response: dict[str, Any], request: ResponseRequest, m
         if part.get("type") == "output_text"
     )
     now = int(time.time())
-    return {
+    response = {
         "id": f"resp_{uuid.uuid4().hex}",
         "object": "response",
         "created_at": now,
@@ -1181,6 +1554,9 @@ def _chat_to_response(chat_response: dict[str, Any], request: ResponseRequest, m
             "total_tokens": chat_response.get("usage", {}).get("total_tokens", 0),
         },
     }
+    if file_search is not None:
+        response["laas_file_search"] = file_search
+    return response
 
 
 def _normalize_embedding_inputs(value: Any) -> list[str]:

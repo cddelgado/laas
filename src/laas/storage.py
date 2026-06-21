@@ -9,6 +9,8 @@ import struct
 import threading
 import time
 import uuid
+import zipfile
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +166,32 @@ class LocalStorage:
         return {"id": vector_store_id, "object": "vector_store.deleted", "deleted": True}
 
     def attach_file(self, *, vector_store_id: str, file_id: str) -> dict[str, Any]:
+        self._prepare_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
+        self._index_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
+        return self.get_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
+
+    def attach_file_async(self, *, vector_store_id: str, file_id: str) -> dict[str, Any]:
+        self._prepare_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
+        thread = threading.Thread(
+            target=self._index_vector_store_file,
+            kwargs={"vector_store_id": vector_store_id, "file_id": file_id, "raise_errors": False},
+            daemon=True,
+        )
+        thread.start()
+        return self.get_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
+
+    def vector_store_indexing_status(self, vector_store_id: str) -> dict[str, Any]:
+        store = self.get_vector_store(vector_store_id)
+        files = self.list_vector_store_files(vector_store_id)
+        return {
+            "object": "local.vector_store.indexing_status",
+            "vector_store_id": vector_store_id,
+            "status": store["status"],
+            "file_counts": store["file_counts"],
+            "files": files,
+        }
+
+    def _prepare_vector_store_file(self, *, vector_store_id: str, file_id: str) -> None:
         with self._lock:
             self._vector_store_row(vector_store_id)
             self._file_row(file_id)
@@ -177,6 +205,9 @@ class LocalStorage:
                     """,
                     (vector_store_id, file_id, "in_progress", created_at),
                 )
+
+    def _index_vector_store_file(self, *, vector_store_id: str, file_id: str, raise_errors: bool = True) -> None:
+        with self._lock:
             try:
                 self._index_file(vector_store_id=vector_store_id, file_id=file_id)
             except Exception as exc:
@@ -188,7 +219,9 @@ class LocalStorage:
                         """,
                         ("failed", str(exc), vector_store_id, file_id),
                     )
-                raise
+                if raise_errors:
+                    raise
+                return
             with self._connect() as con:
                 con.execute(
                     """
@@ -197,7 +230,6 @@ class LocalStorage:
                     """,
                     ("completed", vector_store_id, file_id),
                 )
-            return self.get_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
 
     def list_vector_store_files(self, vector_store_id: str) -> list[dict[str, Any]]:
         self._vector_store_row(vector_store_id)
@@ -455,10 +487,84 @@ def _vector_store_file_object(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _extract_text(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".html", ".htm"}:
+        return _extract_html_text(path)
+    if suffix in {".md", ".markdown"}:
+        return _extract_markdown_text(path)
+    if suffix == ".docx":
+        return _extract_docx_text(path)
+    if suffix == ".pdf":
+        return _extract_pdf_text(path)
     content = path.read_bytes()
     if not content:
         return ""
     return content.decode("utf-8", errors="ignore")
+
+
+def _extract_markdown_text(path: Path) -> str:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"!\[[^\]]*]\([^)]+\)", " ", text)
+    text = re.sub(r"\[([^\]]+)]\([^)]+\)", r"\1", text)
+    text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s{0,3}[-*+]\s+", "", text, flags=re.MULTILINE)
+    return text
+
+
+class _TextHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"script", "style", "noscript"}:
+            self._skip += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style", "noscript"} and self._skip:
+            self._skip -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip and data.strip():
+            self.parts.append(data.strip())
+
+
+def _extract_html_text(path: Path) -> str:
+    parser = _TextHTMLParser()
+    parser.feed(path.read_text(encoding="utf-8", errors="ignore"))
+    return " ".join(parser.parts)
+
+
+def _extract_docx_text(path: Path) -> str:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
+    except Exception:
+        return path.read_bytes().decode("utf-8", errors="ignore")
+    text = re.sub(r"<[^>]+>", " ", xml)
+    return re.sub(r"\s+", " ", text)
+
+
+def _extract_pdf_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader
+        except Exception:
+            return path.read_bytes().decode("latin-1", errors="ignore")
+
+    reader = PdfReader(str(path))
+    parts = []
+    for page in reader.pages:
+        try:
+            parts.append(page.extract_text() or "")
+        except Exception:
+            continue
+    return "\n".join(parts)
 
 
 def _chunk_text(text: str, *, chunk_tokens: int, overlap_tokens: int) -> list[str]:

@@ -810,6 +810,41 @@ print(results.json()["data"])
 The first attach indexes the file synchronously with the configured embeddings
 backend. If the embedding model is missing, either load/download it first or
 leave `LAAS_EMBEDDING_AUTO_DOWNLOAD=true` so LAAS can fetch it on first use.
+Use `{"file_id": "...", "wait": false}` to return immediately and poll
+`GET /v1/local/vector_stores/{vector_store_id}/indexing/status`.
+
+Chat Completions and Responses can use a local vector store through
+`file_search`:
+
+```python
+response = requests.post(
+    f"{base_url}/chat/completions",
+    json={
+        "messages": [{"role": "user", "content": "how do I configure Vulkan?"}],
+        "tools": [{"type": "file_search", "vector_store_ids": [store_id]}],
+    },
+)
+response.raise_for_status()
+print(response.json()["laas_file_search"]["results"])
+```
+
+Text extraction is built in for UTF-8/plain text, Markdown, HTML, and docx.
+PDF extraction uses `pypdf` or `PyPDF2` if one is installed; otherwise LAAS
+falls back to a lossy byte decode so indexing fails gracefully rather than
+requiring another dependency for non-PDF users.
+
+```bash
+python -m pip install -e ".[documents]"
+```
+
+The local Batches endpoint currently supports JSONL files for
+`endpoint="/v1/embeddings"`. Upload a `purpose=batch` JSONL file through
+`/v1/files`, call `POST /v1/batches`, and retrieve the returned
+`output_file_id` through `/v1/files/{file_id}/content`.
+
+`POST /v1/moderations` is rule-backed and deterministic. It exists for local
+OpenAI-client compatibility and should not be treated as a high-fidelity safety
+classifier.
 
 Gemma 4 multimodal requests require a projector. The default Q4 main model uses
 `mmproj-gemma-4-E4B-it-Q8_0.gguf` because the repo currently publishes Q8 and

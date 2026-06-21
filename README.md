@@ -28,6 +28,11 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `GET /v1/vector_stores/{vector_store_id}/files`
 - `GET /v1/vector_stores/{vector_store_id}/files/{file_id}`
 - `DELETE /v1/vector_stores/{vector_store_id}/files/{file_id}`
+- `POST /v1/batches`
+- `GET /v1/batches`
+- `GET /v1/batches/{batch_id}`
+- `POST /v1/batches/{batch_id}/cancel`
+- `POST /v1/moderations`
 - `POST /v1/images/generations`
 - `POST /v1/images/variations`
 - `POST /v1/images/edits`
@@ -63,6 +68,7 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/embeddings/unload`
 - `GET /v1/local/files/status`
 - `POST /v1/local/vector_stores/{vector_store_id}/search`
+- `GET /v1/local/vector_stores/{vector_store_id}/indexing/status`
 - `GET /v1/local/voice/status`
 - `POST /v1/local/voice/download`
 - `POST /v1/local/voice/load`
@@ -862,6 +868,39 @@ Invoke-RestMethod -Method Post `
   -ContentType "application/json" `
   -Body '{"query":"how do I configure Vulkan?","limit":8}'
 ```
+
+Chat Completions and Responses can also use local vector stores through a
+`file_search` tool. LAAS searches the configured stores, injects the retrieved
+snippets as local context, and returns the matches in `laas_file_search`:
+
+```python
+response = client.chat.completions.create(
+    model="gemma-4-e4b-it-q4_k_m",
+    messages=[{"role": "user", "content": "How do I configure Vulkan?"}],
+    tools=[{"type": "file_search", "vector_store_ids": [store.id]}],
+)
+print(response.choices[0].message.content)
+```
+
+Vector store file attachment indexes synchronously by default. To return
+immediately and poll status:
+
+```python
+requests.post(
+    f"{base_url}/vector_stores/{store_id}/files",
+    json={"file_id": file_id, "wait": False},
+).raise_for_status()
+
+requests.get(
+    f"{base_url}/local/vector_stores/{store_id}/indexing/status",
+).raise_for_status()
+```
+
+The first local batch implementation supports JSONL requests for
+`/v1/embeddings`. Upload a batch input file with purpose `batch`, then call
+`POST /v1/batches`; the output is written as another local file. The
+`/v1/moderations` endpoint is implemented as deterministic local rules for
+compatibility, not as a replacement for hosted moderation classifiers.
 
 ## Compatibility Testing
 

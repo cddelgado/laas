@@ -737,14 +737,20 @@ def test_compatibility_matrix_and_unsupported_openai_endpoints(tmp_path: Path) -
     assert any(item["surface"] == "Embeddings" and item["status"] == "supported" for item in payload["data"])
     assert any(item["surface"] == "Files" and item["status"] == "supported" for item in payload["data"])
     assert any(item["surface"] == "Vector Stores" and item["status"] == "supported" for item in payload["data"])
+    assert any(item["surface"] == "Batches" and item["status"] == "supported" for item in payload["data"])
+    assert any(item["surface"] == "Moderations" and item["status"] == "supported" for item in payload["data"])
 
     files = client.get("/v1/files")
     assert files.status_code == 200
     assert files.json()["data"] == []
 
     batch = client.post("/v1/batches", json={})
-    assert batch.status_code == 501
-    assert batch.json()["detail"]["error"]["param"] == "endpoint"
+    assert batch.status_code == 400
+    assert batch.json()["detail"]["error"]["param"] == "input_file_id"
+
+    fine_tuning = client.post("/v1/fine_tuning/jobs", json={})
+    assert fine_tuning.status_code == 501
+    assert fine_tuning.json()["detail"]["error"]["param"] == "endpoint"
 
 
 def test_files_api_persists_lists_serves_and_deletes(tmp_path: Path) -> None:
@@ -829,6 +835,129 @@ def test_vector_stores_attach_index_search_and_delete(tmp_path: Path) -> None:
 
     deleted = client.delete(f"/v1/vector_stores/{store['id']}").json()
     assert deleted == {"id": store["id"], "object": "vector_store.deleted", "deleted": True}
+
+
+def test_vector_store_async_indexing_status(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    file_response = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={"file": ("manual.md", b"async indexing text", "text/markdown")},
+    ).json()
+    store = client.post("/v1/vector_stores", json={"name": "docs"}).json()
+
+    attached = client.post(
+        f"/v1/vector_stores/{store['id']}/files",
+        json={"file_id": file_response["id"], "wait": False},
+    )
+
+    assert attached.status_code == 200
+    assert attached.json()["status"] in {"in_progress", "completed"}
+    status = client.get(f"/v1/local/vector_stores/{store['id']}/indexing/status")
+    assert status.status_code == 200
+    assert status.json()["file_counts"]["total"] == 1
+
+
+def test_file_search_injects_context_and_returns_metadata(tmp_path: Path) -> None:
+    backend = MessageCapturingBackend()
+    client = make_client_with_backend(tmp_path, backend)
+    file_response = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={"file": ("manual.md", b"Vulkan requires the GPU runtime package.", "text/markdown")},
+    ).json()
+    store = client.post("/v1/vector_stores", json={"name": "docs"}).json()
+    client.post(f"/v1/vector_stores/{store['id']}/files", json={"file_id": file_response["id"]})
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "How do I configure Vulkan?"}],
+            "tools": [{"type": "file_search", "vector_store_ids": [store["id"]]}],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["laas_file_search"]["results"][0]["file_id"] == file_response["id"]
+    assert "Vulkan requires" in backend.calls[0][0]["content"]
+
+
+def test_responses_file_search_returns_metadata(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    file_response = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={"file": ("manual.md", b"ROCm setup needs a compatible wheel.", "text/markdown")},
+    ).json()
+    store = client.post("/v1/vector_stores", json={"name": "docs"}).json()
+    client.post(f"/v1/vector_stores/{store['id']}/files", json={"file_id": file_response["id"]})
+
+    response = client.post(
+        "/v1/responses",
+        json={
+            "input": "What does ROCm setup need?",
+            "tools": [{"type": "file_search", "vector_store_ids": [store["id"]]}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["laas_file_search"]["results"][0]["file_id"] == file_response["id"]
+
+
+def test_vector_store_extracts_html_text(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    file_response = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={"file": ("page.html", b"<html><script>nope</script><h1>Vulkan Guide</h1></html>", "text/html")},
+    ).json()
+    store = client.post("/v1/vector_stores", json={"name": "docs"}).json()
+    client.post(f"/v1/vector_stores/{store['id']}/files", json={"file_id": file_response["id"]})
+
+    search = client.post(f"/v1/local/vector_stores/{store['id']}/search", json={"query": "Vulkan", "limit": 1})
+
+    assert search.status_code == 200
+    assert "Vulkan Guide" in search.json()["data"][0]["text"]
+    assert "nope" not in search.json()["data"][0]["text"]
+
+
+def test_batches_embeddings_jsonl_output_file(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    line = json.dumps({"custom_id": "one", "method": "POST", "url": "/v1/embeddings", "body": {"input": "alpha", "dimensions": 4}})
+    input_file = client.post(
+        "/v1/files",
+        data={"purpose": "batch"},
+        files={"file": ("batch.jsonl", (line + "\n").encode("utf-8"), "application/jsonl")},
+    ).json()
+
+    batch = client.post(
+        "/v1/batches",
+        json={"input_file_id": input_file["id"], "endpoint": "/v1/embeddings", "completion_window": "24h"},
+    )
+
+    assert batch.status_code == 200
+    payload = batch.json()
+    assert payload["object"] == "batch"
+    assert payload["status"] == "completed"
+    assert payload["request_counts"] == {"total": 1, "completed": 1, "failed": 0}
+    output = client.get(f"/v1/files/{payload['output_file_id']}/content")
+    assert output.status_code == 200
+    row = json.loads(output.text.splitlines()[0])
+    assert row["custom_id"] == "one"
+    assert row["response"]["body"]["data"][0]["object"] == "embedding"
+
+
+def test_moderations_rule_endpoint(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post("/v1/moderations", json={"input": ["hello", "I will kill you"]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["flagged"] is False
+    assert payload["results"][1]["flagged"] is True
+    assert payload["results"][1]["categories"]["violence"] is True
 
 
 def test_load_chat_completion_and_unload(tmp_path: Path) -> None:
