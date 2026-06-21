@@ -9,11 +9,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, Response, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, File, Form, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from .errors import openai_error
-from .image import ImageManager, ImageNotDownloadedError, parse_image_size
+from .image import (
+    ImageManager,
+    ImageNotDownloadedError,
+    ImageParameterError,
+    cleanup_image_outputs,
+    normalize_image_generation_options,
+    save_image_output,
+)
 from .manager import ModelManager, ModelNotDownloadedError
 from .openai_compat import _normalize_chat_response, build_openai_router
 from .schemas import (
@@ -211,6 +218,16 @@ def create_app(
     @app.post("/v1/local/images/unload")
     def unload_image_model() -> dict[str, Any]:
         return active_image_manager.unload().model_dump()
+
+    @app.get("/v1/local/files/images/{filename}")
+    def get_local_image_file(filename: str) -> FileResponse:
+        safe_name = Path(filename).name
+        if safe_name != filename or not safe_name.endswith(".png"):
+            raise openai_error(404, "Image output not found", code="not_found")
+        path = active_settings.resolved_image_output_dir / safe_name
+        if not path.exists() or not path.is_file():
+            raise openai_error(404, "Image output not found", code="not_found")
+        return FileResponse(path, media_type="image/png", filename=safe_name)
 
     @app.get("/v1/local/audio/status")
     def audio_status() -> dict[str, Any]:
@@ -651,33 +668,56 @@ def create_app(
             return
 
     @app.post("/v1/images/generations")
-    def create_image_generation(request: ImageGenerationRequest) -> dict[str, Any]:
-        if request.model and request.model != active_settings.image_model_id:
+    def create_image_generation(request: Request, payload: ImageGenerationRequest) -> dict[str, Any]:
+        response_format = payload.response_format or active_settings.image_default_response_format
+        if response_format not in {"b64_json", "url"}:
+            raise openai_error(400, "response_format must be b64_json or url", param="response_format")
+        if payload.model and payload.model != active_settings.image_model_id:
             raise openai_error(
                 404,
-                f"The image model '{request.model}' is not available. Configured image model is '{active_settings.image_model_id}'.",
+                f"The image model '{payload.model}' is not available. Configured image model is '{active_settings.image_model_id}'.",
                 param="model",
                 code="model_not_found",
             )
-        if request.n != 1:
-            raise openai_error(400, "only n=1 is supported for local image generation", param="n")
-        if request.response_format != "b64_json":
-            raise openai_error(400, "only response_format=b64_json is supported", param="response_format")
         try:
-            width, height = parse_image_size(request.size or active_settings.image_default_size)
-            image = active_image_manager.generate(
-                prompt=request.prompt,
-                negative_prompt=request.negative_prompt,
-                width=width,
-                height=height,
-                num_inference_steps=request.num_inference_steps or active_settings.image_num_inference_steps,
-                guidance_scale=(
-                    request.guidance_scale
-                    if request.guidance_scale is not None
-                    else active_settings.image_guidance_scale
-                ),
-                seed=request.seed,
+            options = normalize_image_generation_options(
+                prompt=payload.prompt,
+                size=payload.size or active_settings.image_default_size,
+                default_steps=active_settings.image_num_inference_steps,
+                default_guidance_scale=active_settings.image_guidance_scale,
+                num_inference_steps=payload.num_inference_steps,
+                guidance_scale=payload.guidance_scale,
+                quality=payload.quality,
+                style=payload.style,
+                background=payload.background,
+                moderation=payload.moderation,
             )
+            cleanup_image_outputs(
+                output_dir=active_settings.resolved_image_output_dir,
+                retention_seconds=active_settings.image_output_retention_seconds,
+            )
+            data = []
+            for index in range(payload.n):
+                seed = payload.seed + index if payload.seed is not None else None
+                image = active_image_manager.generate(
+                    prompt=options.prompt,
+                    negative_prompt=payload.negative_prompt,
+                    width=options.width,
+                    height=options.height,
+                    num_inference_steps=options.num_inference_steps,
+                    guidance_scale=options.guidance_scale,
+                    seed=seed,
+                )
+                item = {"revised_prompt": options.prompt}
+                if response_format == "b64_json":
+                    item["b64_json"] = base64.b64encode(image.content).decode("ascii")
+                else:
+                    path = save_image_output(
+                        content=image.content,
+                        output_dir=active_settings.resolved_image_output_dir,
+                    )
+                    item["url"] = str(request.url_for("get_local_image_file", filename=path.name))
+                data.append(item)
         except ImageNotDownloadedError as exc:
             raise openai_error(
                 409,
@@ -686,6 +726,8 @@ def create_app(
                 param=exc.asset,
                 code="image_model_not_downloaded",
             ) from exc
+        except ImageParameterError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param=exc.param) from exc
         except ValueError as exc:
             raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
         except RuntimeError as exc:
@@ -693,12 +735,7 @@ def create_app(
 
         return {
             "created": int(time.time()),
-            "data": [
-                {
-                    "b64_json": base64.b64encode(image.content).decode("ascii"),
-                    "revised_prompt": request.prompt,
-                }
-            ],
+            "data": data,
         }
 
     @app.post("/v1/audio/speech")

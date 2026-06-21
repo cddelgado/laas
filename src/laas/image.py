@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -24,6 +25,21 @@ class ImageNotDownloadedError(RuntimeError):
         self.path = path
         self.asset = asset
         super().__init__(f"{asset} is not downloaded: {path}")
+
+
+class ImageParameterError(ValueError):
+    def __init__(self, message: str, *, param: str) -> None:
+        self.param = param
+        super().__init__(message)
+
+
+@dataclass
+class ImageGenerationOptions:
+    prompt: str
+    width: int
+    height: int
+    num_inference_steps: int
+    guidance_scale: float
 
 
 class ImageBackend:
@@ -147,6 +163,8 @@ class ImageManager:
                 guidance_scale=self.settings.image_guidance_scale,
                 device=self.settings.image_device,
                 torch_dtype=self.settings.image_torch_dtype,
+                output_dir=str(self.settings.resolved_image_output_dir),
+                output_retention_seconds=self.settings.image_output_retention_seconds,
                 idle_unload_seconds=self.settings.image_idle_unload_seconds,
                 last_used_at=self._last_used_at,
                 download_in_progress=self._download_in_progress,
@@ -298,6 +316,76 @@ def parse_image_size(size: str) -> tuple[int, int]:
     if width <= 0 or height <= 0:
         raise ValueError("size dimensions must be positive")
     return width, height
+
+
+def normalize_image_generation_options(
+    *,
+    prompt: str,
+    size: str,
+    default_steps: int,
+    default_guidance_scale: float,
+    num_inference_steps: int | None = None,
+    guidance_scale: float | None = None,
+    quality: str | None = None,
+    style: str | None = None,
+    background: str | None = None,
+    moderation: str | None = None,
+) -> ImageGenerationOptions:
+    if quality not in {None, "auto", "standard", "hd", "low", "medium", "high"}:
+        raise ImageParameterError("unsupported quality value", param="quality")
+    if style not in {None, "auto", "vivid", "natural"}:
+        raise ImageParameterError("unsupported style value", param="style")
+    if background not in {None, "auto", "transparent", "opaque"}:
+        raise ImageParameterError("unsupported background value", param="background")
+    if background == "transparent":
+        raise ImageParameterError(
+            "background=transparent is not supported by the local SDXL Turbo backend",
+            param="background",
+        )
+    if moderation not in {None, "auto", "low"}:
+        raise ImageParameterError("unsupported moderation value", param="moderation")
+
+    width, height = parse_image_size(size)
+    steps = num_inference_steps or default_steps
+    if num_inference_steps is None and quality in {"hd", "high"}:
+        steps = max(steps, 4)
+    resolved_guidance = default_guidance_scale if guidance_scale is None else guidance_scale
+
+    translated_prompt = prompt
+    if style == "vivid":
+        translated_prompt = f"{translated_prompt}, vivid color, high contrast, dramatic detail"
+    elif style == "natural":
+        translated_prompt = f"{translated_prompt}, natural color, realistic lighting"
+
+    return ImageGenerationOptions(
+        prompt=translated_prompt,
+        width=width,
+        height=height,
+        num_inference_steps=steps,
+        guidance_scale=resolved_guidance,
+    )
+
+
+def save_image_output(*, content: bytes, output_dir: Path, image_id: str | None = None) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    filename = image_id or f"img-{int(time.time())}-{secrets.token_hex(8)}.png"
+    if not filename.endswith(".png"):
+        filename = f"{filename}.png"
+    path = output_dir / Path(filename).name
+    path.write_bytes(content)
+    return path
+
+
+def cleanup_image_outputs(*, output_dir: Path, retention_seconds: int) -> None:
+    if retention_seconds <= 0 or not output_dir.exists():
+        return
+    cutoff = time.time() - retention_seconds
+    for path in output_dir.glob("*.png"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
 
 
 def _resolve_device(torch_module, configured: str) -> str:

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -69,12 +69,22 @@ class Settings(BaseSettings):
     image_default_size: str = "768x768"
     image_num_inference_steps: int = 2
     image_guidance_scale: float = 0.0
+    image_default_response_format: str = "b64_json"
+    image_output_dir: Path | None = None
+    image_output_retention_seconds: int = 86400
     image_auto_load: bool = False
     image_auto_download: bool = True
     image_idle_unload_seconds: int = 900
     image_device: str = "auto"
     image_torch_dtype: str = "float16"
     settings_file: Path = DEFAULT_SETTINGS_FILE
+
+    @field_validator("image_output_dir", mode="before")
+    @classmethod
+    def _empty_path_is_none(cls, value: Any) -> Any:
+        if value == "":
+            return None
+        return value
 
     @property
     def model_path(self) -> Path:
@@ -105,6 +115,10 @@ class Settings(BaseSettings):
     @property
     def image_model_path(self) -> Path:
         return self.model_dir / self.image_hf_repo_id.replace("/", "__")
+
+    @property
+    def resolved_image_output_dir(self) -> Path:
+        return self.image_output_dir or (self.model_dir / "outputs" / "images")
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -150,6 +164,9 @@ class Settings(BaseSettings):
             "image_default_size": self.image_default_size,
             "image_num_inference_steps": self.image_num_inference_steps,
             "image_guidance_scale": self.image_guidance_scale,
+            "image_default_response_format": self.image_default_response_format,
+            "image_output_dir": str(self.image_output_dir) if self.image_output_dir else None,
+            "image_output_retention_seconds": self.image_output_retention_seconds,
             "image_auto_load": self.image_auto_load,
             "image_auto_download": self.image_auto_download,
             "image_idle_unload_seconds": self.image_idle_unload_seconds,

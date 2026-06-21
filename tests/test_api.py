@@ -366,6 +366,8 @@ def test_image_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     assert status["configured_model"] == "sdxl-turbo"
     assert status["downloaded"] is True
     assert status["is_loaded"] is False
+    assert status["output_dir"] == str(tmp_path / "outputs" / "images")
+    assert status["output_retention_seconds"] == 86400
 
     loaded = client.post("/v1/local/images/load", json={}).json()
     assert loaded["is_loaded"] is True
@@ -400,22 +402,60 @@ def test_image_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     assert backend.closed is True
 
 
+def test_image_generation_supports_url_response_and_multiple_outputs(tmp_path: Path) -> None:
+    client, backend = make_image_client(tmp_path)
+
+    response = client.post(
+        "/v1/images/generations",
+        json={
+            "prompt": "a quiet workshop",
+            "n": 2,
+            "response_format": "url",
+            "quality": "high",
+            "style": "natural",
+            "background": "opaque",
+            "moderation": "auto",
+            "seed": 100,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["data"]) == 2
+    assert backend.calls[0]["seed"] == 100
+    assert backend.calls[1]["seed"] == 101
+    assert backend.calls[0]["num_inference_steps"] == 4
+    assert backend.calls[0]["prompt"] == "a quiet workshop, natural color, realistic lighting"
+    assert payload["data"][0]["revised_prompt"] == "a quiet workshop, natural color, realistic lighting"
+
+    first_image = client.get(payload["data"][0]["url"])
+    second_image = client.get(payload["data"][1]["url"])
+    assert first_image.status_code == 200
+    assert first_image.headers["content-type"] == "image/png"
+    assert first_image.content == b"fake-png"
+    assert second_image.status_code == 200
+    assert len(list((tmp_path / "outputs" / "images").glob("*.png"))) == 2
+
+
 def test_image_generation_rejects_unsupported_options(tmp_path: Path) -> None:
     client, _backend = make_image_client(tmp_path)
 
     unknown_model = client.post("/v1/images/generations", json={"model": "missing", "prompt": "hello"})
     assert unknown_model.status_code == 404
 
-    multiple = client.post("/v1/images/generations", json={"prompt": "hello", "n": 2})
-    assert multiple.status_code == 400
-    assert multiple.json()["detail"]["error"]["param"] == "n"
-
-    url_response = client.post(
+    transparent_response = client.post(
         "/v1/images/generations",
-        json={"prompt": "hello", "response_format": "url"},
+        json={"prompt": "hello", "background": "transparent"},
     )
-    assert url_response.status_code == 400
-    assert url_response.json()["detail"]["error"]["param"] == "response_format"
+    assert transparent_response.status_code == 400
+    assert transparent_response.json()["detail"]["error"]["param"] == "background"
+
+    bad_style = client.post(
+        "/v1/images/generations",
+        json={"prompt": "hello", "style": "cubist"},
+    )
+    assert bad_style.status_code == 400
+    assert bad_style.json()["detail"]["error"]["param"] == "style"
 
 
 def test_image_generation_missing_model_requires_download(tmp_path: Path) -> None:
@@ -1096,6 +1136,17 @@ def test_patch_model_directory_setting(tmp_path: Path) -> None:
     target = tmp_path / "models"
     response = client.patch("/v1/local/settings", json={"model_dir": str(target)}).json()
     assert response["model_dir"] == str(target)
+
+
+def test_blank_image_output_dir_uses_default(tmp_path: Path) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        image_output_dir="",
+    )
+
+    assert settings.image_output_dir is None
+    assert settings.resolved_image_output_dir == tmp_path / "outputs" / "images"
 
 
 def test_missing_model_requires_manual_download_or_auto_download(tmp_path: Path, monkeypatch) -> None:

@@ -77,6 +77,8 @@ class LocalImageStatus(BaseModel):
     guidance_scale: float
     device: str
     torch_dtype: str
+    output_dir: str
+    output_retention_seconds: int
     idle_unload_seconds: int
     last_used_at: float | None = None
     download_in_progress: bool = False
@@ -290,7 +292,11 @@ class ImageGenerationRequest(BaseModel):
     prompt: str
     n: int = Field(default=1, ge=1)
     size: str | None = None
-    response_format: Literal["b64_json", "url"] = "b64_json"
+    response_format: str | None = None
+    quality: str | None = None
+    style: str | None = None
+    background: str | None = None
+    moderation: str | None = None
     user: str | None = None
     negative_prompt: str | None = None
     num_inference_steps: int | None = Field(default=None, gt=0)

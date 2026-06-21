@@ -219,6 +219,9 @@ LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
 LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
+LAAS_IMAGE_OUTPUT_DIR=
+LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 ```
@@ -372,10 +375,12 @@ image = client.images.generate(
     model="sdxl-turbo",
     prompt="a cinematic photo of a tiny robot repairing a neon sign",
     size="768x768",
-    n=1,
-    response_format="b64_json",
+    n=2,
+    response_format="url",
+    quality="high",
+    style="vivid",
 )
-print(image.data[0].b64_json[:80])
+print(image.data[0].url)
 ```
 
 While the first request is downloading, check progress from another terminal:
@@ -391,8 +396,9 @@ curl http://127.0.0.1:8000/v1/local/images/status
 ```
 
 The status response includes `download_in_progress`, `download_started_at`,
-`download_finished_at`, and `last_download_error`. The server console also logs
-when the Hugging Face snapshot download starts, finishes, or fails.
+`download_finished_at`, `last_download_error`, `output_dir`, and
+`output_retention_seconds`. The server console also logs when the Hugging Face
+snapshot download starts, finishes, or fails.
 
 Manual download and load endpoints are still available for prewarming or for
 setups that choose `LAAS_IMAGE_AUTO_DOWNLOAD=false`:
@@ -419,8 +425,19 @@ curl -X POST http://127.0.0.1:8000/v1/local/images/load \
   -d "{}"
 ```
 
-The MVP supports `n=1` and `response_format=b64_json`. Image edits and
-variations are not implemented yet. SDXL Turbo unloads after
+The generation endpoint supports `response_format=b64_json`, `response_format=url`,
+and `n >= 1`. URL outputs are saved under `LAAS_IMAGE_OUTPUT_DIR`, or
+`<LAAS_MODEL_DIR>/outputs/images` by default, and served from
+`/v1/local/files/images/{filename}`. Old outputs are removed opportunistically
+according to `LAAS_IMAGE_OUTPUT_RETENTION_SECONDS`.
+
+OpenAI image parameters are translated for SDXL Turbo where possible:
+`quality=high`/`hd` increases the default step count when
+`num_inference_steps` is not supplied, `style=vivid|natural` adds a prompt hint,
+and `background=opaque|auto` plus `moderation=auto|low` are accepted for client
+compatibility. `background=transparent` returns a clear unsupported-parameter
+error because SDXL Turbo does not generate alpha-channel transparent PNGs.
+Image edits and variations are not implemented yet. SDXL Turbo unloads after
 `LAAS_IMAGE_IDLE_UNLOAD_SECONDS` seconds of inactivity; set it to `0` to keep it
 loaded.
 

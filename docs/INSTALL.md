@@ -342,6 +342,9 @@ LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
 LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
+LAAS_IMAGE_OUTPUT_DIR=
+LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 ```
 
@@ -352,6 +355,23 @@ downloads the snapshot on first use, loads it, and then generates the image.
 Use `GET /v1/local/images/status` from another terminal to inspect
 `download_in_progress`, `download_started_at`, `download_finished_at`, and
 `last_download_error` while the first request is running.
+
+`POST /v1/images/generations` supports `response_format=b64_json`,
+`response_format=url`, and `n >= 1`. URL outputs are saved under
+`LAAS_IMAGE_OUTPUT_DIR`, or `<LAAS_MODEL_DIR>/outputs/images` when unset, and
+served from `/v1/local/files/images/{filename}`. LAAS removes old output PNGs
+opportunistically according to `LAAS_IMAGE_OUTPUT_RETENTION_SECONDS`.
+
+OpenAI image parameters are translated for SDXL Turbo where possible:
+
+- `quality=high` or `quality=hd` increases the default step count when
+  `num_inference_steps` is not supplied.
+- `style=vivid` or `style=natural` appends a small style hint to the prompt.
+- `background=auto` and `background=opaque` are accepted.
+- `moderation=auto` and `moderation=low` are accepted for client compatibility;
+  LAAS does not add a local image moderation model.
+- `background=transparent` returns an unsupported-parameter error because SDXL
+  Turbo does not generate transparent PNGs.
 
 ## 6. Optional Local Voice Stack
 
@@ -467,6 +487,9 @@ LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
 LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
+LAAS_IMAGE_OUTPUT_DIR=
+LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
@@ -507,6 +530,9 @@ LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
 LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
+LAAS_IMAGE_OUTPUT_DIR=
+LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
