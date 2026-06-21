@@ -346,6 +346,10 @@ LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
 LAAS_IMAGE_OUTPUT_DIR=
 LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_DOWNLOAD=true
+LAAS_IMAGE_VARIATION_DEFAULT_SIZE=512x512
+LAAS_IMAGE_VARIATION_NUM_INFERENCE_STEPS=4
+LAAS_IMAGE_VARIATION_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_VARIATION_STRENGTH=0.55
 LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
 LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
 LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
@@ -367,9 +371,11 @@ Use `GET /v1/local/images/status` from another terminal to inspect
 `last_download_error` while the first request is running.
 
 `POST /v1/images/generations` supports `response_format=b64_json`,
-`response_format=url`, and `n >= 1`. URL outputs are saved under
+`response_format=url`, and `n >= 1`. Image generation, edits, and variations
+support `output_format=png|jpeg|webp` and `output_compression` for JPEG/WebP.
+URL outputs are saved under
 `LAAS_IMAGE_OUTPUT_DIR`, or `<LAAS_MODEL_DIR>/outputs/images` when unset, and
-served from `/v1/local/files/images/{filename}`. LAAS removes old output PNGs
+served from `/v1/local/files/images/{filename}`. LAAS removes old output images
 opportunistically according to `LAAS_IMAGE_OUTPUT_RETENTION_SECONDS`.
 
 OpenAI image parameters are translated for SDXL Turbo where possible:
@@ -382,6 +388,14 @@ OpenAI image parameters are translated for SDXL Turbo where possible:
   LAAS does not add a local image moderation model.
 - `background=transparent` returns an unsupported-parameter error because SDXL
   Turbo does not generate transparent PNGs.
+
+`POST /v1/images/variations` is implemented as a local SDXL Turbo img2img
+translation of OpenAI's DALL-E-style variations endpoint. It accepts multipart
+form data with a square PNG `image`, plus `n`, `size`, `response_format`, and
+`user`. Local-only tuning fields `seed`, `strength`, `guidance_scale`, and
+`num_inference_steps` are also accepted. Since the OpenAI variations endpoint
+does not include a prompt, LAAS uses `LAAS_IMAGE_VARIATION_PROMPT` as the local
+img2img prompt.
 
 `POST /v1/images/edits` uses `stable-diffusion-v1-5/stable-diffusion-inpainting`
 by default. It accepts multipart form data with `image`, `prompt`, and optional
@@ -398,6 +412,16 @@ visible changed wall or background patch. `LAAS_IMAGE_EDIT_PADDING_MASK_CROP`
 passes Diffusers extra crop context around the mask when supported, and
 `LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS` softens the final mask edge.
 
+Create and preview masks with:
+
+```powershell
+python .\scripts\make_inpaint_mask.py `
+  --image .\base.png `
+  --mask .\mask.png `
+  --preview .\mask-preview.png `
+  --rect 210,35,341,211
+```
+
 Local edit lifecycle endpoints:
 
 ```text
@@ -411,6 +435,10 @@ The edit endpoint supports `response_format=b64_json`, `response_format=url`,
 `n >= 1`, `negative_prompt`, `strength`, `guidance_scale`,
 `num_inference_steps`, `seed`, `quality`, `input_fidelity`, `background`, and
 `moderation`.
+
+Use `GET /v1/local/images/status/all` to inspect generation and edit model
+status together, including active image jobs and the last image job error.
+Use `POST /v1/local/images/unload/all` to unload both image pipelines at once.
 
 ## 6. Optional Local Voice Stack
 
@@ -532,6 +560,10 @@ LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
+LAAS_IMAGE_VARIATION_DEFAULT_SIZE=512x512
+LAAS_IMAGE_VARIATION_NUM_INFERENCE_STEPS=4
+LAAS_IMAGE_VARIATION_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_VARIATION_STRENGTH=0.55
 LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
 LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
 LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
@@ -586,6 +618,10 @@ LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
+LAAS_IMAGE_VARIATION_DEFAULT_SIZE=512x512
+LAAS_IMAGE_VARIATION_NUM_INFERENCE_STEPS=4
+LAAS_IMAGE_VARIATION_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_VARIATION_STRENGTH=0.55
 LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
 LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
 LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512

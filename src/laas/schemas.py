@@ -85,6 +85,11 @@ class LocalImageStatus(BaseModel):
     download_started_at: float | None = None
     download_finished_at: float | None = None
     last_download_error: str | None = None
+    active_jobs: int = 0
+    current_operation: str | None = None
+    last_job_started_at: float | None = None
+    last_job_finished_at: float | None = None
+    last_job_error: str | None = None
 
 
 class LocalImageEditStatus(LocalImageStatus):
@@ -308,6 +313,8 @@ class ImageGenerationRequest(BaseModel):
     num_inference_steps: int | None = Field(default=None, gt=0)
     guidance_scale: float | None = None
     seed: int | None = None
+    output_format: str | None = None
+    output_compression: int | None = Field(default=None, ge=0, le=100)
 
 
 class OpenAIModel(BaseModel):
@@ -367,8 +374,27 @@ class SettingsPatch(BaseModel):
     image_default_size: str | None = None
     image_num_inference_steps: int | None = Field(default=None, gt=0)
     image_guidance_scale: float | None = None
+    image_default_response_format: str | None = None
+    image_output_dir: str | None = None
+    image_output_retention_seconds: int | None = Field(default=None, ge=0)
     image_auto_load: bool | None = None
     image_auto_download: bool | None = None
     image_idle_unload_seconds: int | None = Field(default=None, ge=0)
     image_device: str | None = None
     image_torch_dtype: str | None = None
+    image_variation_default_size: str | None = None
+    image_variation_num_inference_steps: int | None = Field(default=None, gt=0)
+    image_variation_guidance_scale: float | None = None
+    image_variation_strength: float | None = None
+    image_variation_prompt: str | None = None
+    image_edit_model_id: str | None = None
+    image_edit_hf_repo_id: str | None = None
+    image_edit_default_size: str | None = None
+    image_edit_num_inference_steps: int | None = Field(default=None, gt=0)
+    image_edit_guidance_scale: float | None = None
+    image_edit_strength: float | None = None
+    image_edit_padding_mask_crop: int | None = Field(default=None, ge=0)
+    image_edit_composite_blur_radius: int | None = Field(default=None, ge=0)
+    image_edit_auto_load: bool | None = None
+    image_edit_auto_download: bool | None = None
+    image_edit_idle_unload_seconds: int | None = Field(default=None, ge=0)

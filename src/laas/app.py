@@ -19,9 +19,13 @@ from .image import (
     ImageNotDownloadedError,
     ImageParameterError,
     cleanup_image_outputs,
+    encode_image_output,
     normalize_image_edit_options,
     normalize_image_generation_options,
+    normalize_image_output_format,
+    normalize_image_variation_options,
     prepare_inpaint_inputs,
+    prepare_variation_input,
     save_image_output,
 )
 from .manager import ModelManager, ModelNotDownloadedError
@@ -115,6 +119,34 @@ def create_app(
     app.state.image_edit_manager = active_image_edit_manager
     app.state.voice_sessions = {}
 
+    def image_response_item(
+        *,
+        request: Request,
+        image,
+        response_format: str,
+        output_format: str,
+        output_compression: int | None,
+        revised_prompt: str | None = None,
+    ) -> dict[str, Any]:
+        encoded = encode_image_output(
+            content=image.content,
+            output_format=output_format,
+            output_compression=output_compression,
+        )
+        item: dict[str, Any] = {}
+        if revised_prompt is not None:
+            item["revised_prompt"] = revised_prompt
+        if response_format == "b64_json":
+            item["b64_json"] = base64.b64encode(encoded.content).decode("ascii")
+        else:
+            path = save_image_output(
+                content=encoded.content,
+                output_dir=active_settings.resolved_image_output_dir,
+                media_type=encoded.media_type,
+            )
+            item["url"] = str(request.url_for("get_local_image_file", filename=path.name))
+        return item
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
@@ -196,6 +228,13 @@ def create_app(
     def image_status() -> dict[str, Any]:
         return active_image_manager.status().model_dump()
 
+    @app.get("/v1/local/images/status/all")
+    def image_status_all() -> dict[str, Any]:
+        return {
+            "generation": active_image_manager.status().model_dump(),
+            "edit": active_image_edit_manager.status().model_dump(),
+        }
+
     @app.post("/v1/local/images/download")
     def download_image_model(request: DownloadImageRequest) -> dict[str, Any]:
         if request.hf_repo_id:
@@ -230,6 +269,16 @@ def create_app(
     @app.post("/v1/local/images/unload")
     def unload_image_model() -> dict[str, Any]:
         return active_image_manager.unload().model_dump()
+
+    @app.post("/v1/local/images/unload/all")
+    def unload_all_image_models() -> dict[str, Any]:
+        generation = active_image_manager.unload().model_dump()
+        edit = active_image_edit_manager.unload().model_dump()
+        return {
+            "generation": generation,
+            "edit": edit,
+            "is_loaded": generation["is_loaded"] or edit["is_loaded"],
+        }
 
     @app.get("/v1/local/images/edit/status")
     def image_edit_status() -> dict[str, Any]:
@@ -273,12 +322,19 @@ def create_app(
     @app.get("/v1/local/files/images/{filename}")
     def get_local_image_file(filename: str) -> FileResponse:
         safe_name = Path(filename).name
-        if safe_name != filename or not safe_name.endswith(".png"):
+        suffix = Path(safe_name).suffix.lower()
+        media_type = {
+            ".png": "image/png",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".webp": "image/webp",
+        }.get(suffix)
+        if safe_name != filename or media_type is None:
             raise openai_error(404, "Image output not found", code="not_found")
         path = active_settings.resolved_image_output_dir / safe_name
         if not path.exists() or not path.is_file():
             raise openai_error(404, "Image output not found", code="not_found")
-        return FileResponse(path, media_type="image/png", filename=safe_name)
+        return FileResponse(path, media_type=media_type, filename=safe_name)
 
     @app.get("/v1/local/audio/status")
     def audio_status() -> dict[str, Any]:
@@ -731,6 +787,7 @@ def create_app(
                 code="model_not_found",
             )
         try:
+            output_format = normalize_image_output_format(payload.output_format)
             options = normalize_image_generation_options(
                 prompt=payload.prompt,
                 size=payload.size or active_settings.image_default_size,
@@ -759,16 +816,16 @@ def create_app(
                     guidance_scale=options.guidance_scale,
                     seed=seed,
                 )
-                item = {"revised_prompt": options.prompt}
-                if response_format == "b64_json":
-                    item["b64_json"] = base64.b64encode(image.content).decode("ascii")
-                else:
-                    path = save_image_output(
-                        content=image.content,
-                        output_dir=active_settings.resolved_image_output_dir,
+                data.append(
+                    image_response_item(
+                        request=request,
+                        image=image,
+                        response_format=response_format,
+                        output_format=output_format,
+                        output_compression=payload.output_compression,
+                        revised_prompt=options.prompt,
                     )
-                    item["url"] = str(request.url_for("get_local_image_file", filename=path.name))
-                data.append(item)
+                )
         except ImageNotDownloadedError as exc:
             raise openai_error(
                 409,
@@ -783,6 +840,106 @@ def create_app(
             raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
         except RuntimeError as exc:
             raise openai_error(503, str(exc), type_="server_error", code="image_backend_missing") from exc
+        except Exception as exc:
+            raise openai_error(500, str(exc), type_="server_error", code="image_generation_failed") from exc
+
+        return {
+            "created": int(time.time()),
+            "data": data,
+        }
+
+    @app.post("/v1/images/variations")
+    def create_image_variation(
+        request: Request,
+        image: UploadFile = File(...),
+        model: str | None = Form(None),
+        n: int = Form(1),
+        size: str | None = Form(None),
+        response_format: str | None = Form(None),
+        user: str | None = Form(None),
+        seed: int | None = Form(None),
+        output_format: str | None = Form(None),
+        output_compression: int | None = Form(None),
+        num_inference_steps: int | None = Form(None),
+        guidance_scale: float | None = Form(None),
+        strength: float | None = Form(None),
+    ) -> dict[str, Any]:
+        _ = user
+        response_format = response_format or active_settings.image_default_response_format
+        if response_format not in {"b64_json", "url"}:
+            raise openai_error(400, "response_format must be b64_json or url", param="response_format")
+        if output_compression is not None and not 0 <= output_compression <= 100:
+            raise openai_error(400, "output_compression must be between 0 and 100", param="output_compression")
+        if n < 1 or n > 10:
+            raise openai_error(400, "n must be between 1 and 10", param="n")
+        if model and model not in {active_settings.image_model_id, "dall-e-2"}:
+            raise openai_error(
+                404,
+                f"The image variation model '{model}' is not available. Configured image model is "
+                f"'{active_settings.image_model_id}'.",
+                param="model",
+                code="model_not_found",
+            )
+        try:
+            output_format = normalize_image_output_format(output_format)
+            options = normalize_image_variation_options(
+                size=size,
+                default_size=active_settings.image_variation_default_size,
+                default_prompt=active_settings.image_variation_prompt,
+                default_steps=active_settings.image_variation_num_inference_steps,
+                default_guidance_scale=active_settings.image_variation_guidance_scale,
+                default_strength=active_settings.image_variation_strength,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                strength=strength,
+            )
+            source_image = prepare_variation_input(
+                image_bytes=image.file.read(),
+                width=options.width,
+                height=options.height,
+            )
+            cleanup_image_outputs(
+                output_dir=active_settings.resolved_image_output_dir,
+                retention_seconds=active_settings.image_output_retention_seconds,
+            )
+            data = []
+            for index in range(n):
+                request_seed = seed + index if seed is not None else None
+                varied = active_image_manager.variation(
+                    prompt=options.prompt,
+                    image=source_image,
+                    width=options.width,
+                    height=options.height,
+                    num_inference_steps=options.num_inference_steps,
+                    guidance_scale=options.guidance_scale,
+                    strength=options.strength,
+                    seed=request_seed,
+                )
+                data.append(
+                    image_response_item(
+                        request=request,
+                        image=varied,
+                        response_format=response_format,
+                        output_format=output_format,
+                        output_compression=output_compression,
+                    )
+                )
+        except ImageNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured image model is not downloaded. Call POST /v1/local/images/download first.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="image_model_not_downloaded",
+            ) from exc
+        except ImageParameterError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param=exc.param) from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="image_variation_backend_missing") from exc
+        except Exception as exc:
+            raise openai_error(500, str(exc), type_="server_error", code="image_variation_failed") from exc
 
         return {
             "created": int(time.time()),
@@ -810,13 +967,14 @@ def create_app(
         input_fidelity: str | None = Form(None),
         moderation: str | None = Form(None),
         output_format: str | None = Form(None),
+        output_compression: int | None = Form(None),
     ) -> dict[str, Any]:
         _ = user
         response_format = response_format or active_settings.image_default_response_format
         if response_format not in {"b64_json", "url"}:
             raise openai_error(400, "response_format must be b64_json or url", param="response_format")
-        if output_format not in {None, "png"}:
-            raise openai_error(400, "only output_format=png is supported", param="output_format")
+        if output_compression is not None and not 0 <= output_compression <= 100:
+            raise openai_error(400, "output_compression must be between 0 and 100", param="output_compression")
         if n < 1:
             raise openai_error(400, "n must be greater than or equal to 1", param="n")
         if model and model != active_settings.image_edit_model_id:
@@ -828,6 +986,7 @@ def create_app(
                 code="model_not_found",
             )
         try:
+            resolved_output_format = normalize_image_output_format(output_format)
             options = normalize_image_edit_options(
                 prompt=prompt,
                 size=size if size and size != "auto" else active_settings.image_edit_default_size,
@@ -869,16 +1028,16 @@ def create_app(
                     strength=options.strength,
                     seed=request_seed,
                 )
-                item = {"revised_prompt": options.prompt}
-                if response_format == "b64_json":
-                    item["b64_json"] = base64.b64encode(edited.content).decode("ascii")
-                else:
-                    path = save_image_output(
-                        content=edited.content,
-                        output_dir=active_settings.resolved_image_output_dir,
+                data.append(
+                    image_response_item(
+                        request=request,
+                        image=edited,
+                        response_format=response_format,
+                        output_format=resolved_output_format,
+                        output_compression=output_compression,
+                        revised_prompt=options.prompt,
                     )
-                    item["url"] = str(request.url_for("get_local_image_file", filename=path.name))
-                data.append(item)
+                )
         except ImageNotDownloadedError as exc:
             raise openai_error(
                 409,
@@ -893,6 +1052,8 @@ def create_app(
             raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
         except RuntimeError as exc:
             raise openai_error(503, str(exc), type_="server_error", code="image_edit_backend_missing") from exc
+        except Exception as exc:
+            raise openai_error(500, str(exc), type_="server_error", code="image_edit_failed") from exc
 
         return {
             "created": int(time.time()),

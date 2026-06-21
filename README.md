@@ -16,6 +16,7 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `GET /v1/responses/{response_id}/input_items`
 - `POST /v1/embeddings`
 - `POST /v1/images/generations`
+- `POST /v1/images/variations`
 - `POST /v1/images/edits`
 - `POST /v1/audio/speech`
 - `GET /v1/local/settings`
@@ -229,6 +230,10 @@ LAAS_IMAGE_OUTPUT_DIR=
 LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
+LAAS_IMAGE_VARIATION_DEFAULT_SIZE=512x512
+LAAS_IMAGE_VARIATION_NUM_INFERENCE_STEPS=4
+LAAS_IMAGE_VARIATION_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_VARIATION_STRENGTH=0.55
 LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
 LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
 LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
@@ -456,6 +461,14 @@ SDXL Turbo unloads after
 `LAAS_IMAGE_IDLE_UNLOAD_SECONDS` seconds of inactivity; set it to `0` to keep it
 loaded.
 
+`POST /v1/images/variations` is implemented as a local SDXL Turbo img2img
+translation of OpenAI's DALL-E-style variations endpoint. It accepts multipart
+form data with a square PNG `image`, plus `n`, `size`, `response_format`, and
+`user`. Local-only tuning fields `seed`, `strength`, `guidance_scale`, and
+`num_inference_steps` are also accepted. Since the OpenAI variations endpoint
+does not include a prompt, LAAS uses `LAAS_IMAGE_VARIATION_PROMPT` as the local
+img2img prompt.
+
 Image edits use `stable-diffusion-v1-5/stable-diffusion-inpainting` through
 Diffusers. The edit model has separate load/download/unload lifecycle endpoints
 so it does not need to stay in memory with SDXL Turbo:
@@ -484,6 +497,16 @@ background patch. `LAAS_IMAGE_EDIT_PADDING_MASK_CROP` gives Diffusers extra crop
 context around the mask when the installed pipeline supports it, and
 `LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS` softens the final mask edge.
 
+Use the helper script to create a mask and preview the edit area:
+
+```powershell
+python .\scripts\make_inpaint_mask.py `
+  --image .\base.png `
+  --mask .\mask.png `
+  --preview .\mask-preview.png `
+  --rect 210,35,341,211
+```
+
 ```python
 from openai import OpenAI
 
@@ -503,7 +526,12 @@ print(edited.data[0].url)
 The edit endpoint supports `response_format=b64_json`, `response_format=url`,
 `n >= 1`, `negative_prompt`, `strength`, `guidance_scale`,
 `num_inference_steps`, `seed`, `quality`, `input_fidelity`, `background`, and
-`moderation`. Image variations are not implemented yet.
+`moderation`. Image generation, edits, and variations support
+`output_format=png|jpeg|webp` and `output_compression` for JPEG/WebP.
+
+Use `GET /v1/local/images/status/all` to inspect generation and edit model
+status together, including active image jobs and the last image job error.
+Use `POST /v1/local/images/unload/all` to unload both image pipelines at once.
 
 ## Local Voice Stack
 

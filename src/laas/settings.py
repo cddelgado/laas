@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     image_idle_unload_seconds: int = 900
     image_device: str = "auto"
     image_torch_dtype: str = "float16"
+    image_variation_default_size: str = "512x512"
+    image_variation_num_inference_steps: int = 4
+    image_variation_guidance_scale: float = 0.0
+    image_variation_strength: float = 0.55
+    image_variation_prompt: str = "a high quality variation of the provided image, same subject, similar composition"
     image_edit_model_id: str = "sd-1.5-inpainting"
     image_edit_hf_repo_id: str = "stable-diffusion-v1-5/stable-diffusion-inpainting"
     image_edit_default_size: str = "512x512"
@@ -187,6 +192,11 @@ class Settings(BaseSettings):
             "image_idle_unload_seconds": self.image_idle_unload_seconds,
             "image_device": self.image_device,
             "image_torch_dtype": self.image_torch_dtype,
+            "image_variation_default_size": self.image_variation_default_size,
+            "image_variation_num_inference_steps": self.image_variation_num_inference_steps,
+            "image_variation_guidance_scale": self.image_variation_guidance_scale,
+            "image_variation_strength": self.image_variation_strength,
+            "image_variation_prompt": self.image_variation_prompt,
             "image_edit_model_id": self.image_edit_model_id,
             "image_edit_hf_repo_id": self.image_edit_hf_repo_id,
             "image_edit_default_size": self.image_edit_default_size,

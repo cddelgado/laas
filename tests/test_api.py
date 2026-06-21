@@ -32,6 +32,10 @@ from laas.transcription import (
 )
 from laas.tts import AudioBackend, AudioEncoderMissingError, AudioManager, SynthesizedSpeech, encode_audio, resolve_voice
 
+PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+)
+
 
 def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
     settings = Settings(
@@ -182,6 +186,10 @@ class FakeImageBackend(ImageBackend):
     def generate(self, **kwargs) -> GeneratedImage:
         self.calls.append(kwargs)
         return GeneratedImage(content=b"fake-png", media_type="image/png")
+
+    def variation(self, **kwargs) -> GeneratedImage:
+        self.calls.append(kwargs)
+        return GeneratedImage(content=PNG_1X1, media_type="image/png")
 
     def close(self) -> None:
         self.closed = True
@@ -401,6 +409,10 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     assert status["mmproj_downloaded"] is True
     assert status["is_loaded"] is False
 
+    image_status = client.get("/v1/local/images/status/all").json()
+    assert image_status["generation"]["configured_model"] == "sdxl-turbo"
+    assert image_status["edit"]["configured_model"] == "sd-1.5-inpainting"
+
 
 def test_load_chat_completion_and_unload(tmp_path: Path) -> None:
     client = make_client(tmp_path)
@@ -533,6 +545,78 @@ def test_image_generation_supports_url_response_and_multiple_outputs(tmp_path: P
     assert len(list((tmp_path / "outputs" / "images").glob("*.png"))) == 2
 
 
+def test_image_variation_supports_url_response_and_output_format(tmp_path: Path) -> None:
+    client, backend = make_image_client(tmp_path)
+
+    response = client.post(
+        "/v1/images/variations",
+        data={
+            "model": "sdxl-turbo",
+            "n": "2",
+            "response_format": "url",
+            "size": "512x512",
+            "output_format": "webp",
+            "output_compression": "80",
+            "seed": "80",
+        },
+        files={"image": ("source.png", PNG_1X1, "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["data"]) == 2
+    assert backend.calls[0]["prompt"] == "a high quality variation of the provided image, same subject, similar composition"
+    assert backend.calls[0]["width"] == 512
+    assert backend.calls[0]["height"] == 512
+    assert backend.calls[0]["num_inference_steps"] == 4
+    assert backend.calls[0]["strength"] == 0.55
+    assert backend.calls[0]["seed"] == 80
+    assert backend.calls[1]["seed"] == 81
+
+    first_image = client.get(payload["data"][0]["url"])
+    assert first_image.status_code == 200
+    assert first_image.headers["content-type"] == "image/webp"
+    assert payload["data"][0]["url"].endswith(".webp")
+    assert len(list((tmp_path / "outputs" / "images").glob("*.webp"))) == 2
+
+
+def test_image_variation_rejects_non_square_or_non_png_input(tmp_path: Path) -> None:
+    client, _backend = make_image_client(tmp_path)
+
+    bad_png = client.post(
+        "/v1/images/variations",
+        data={"size": "512x512"},
+        files={"image": ("source.jpg", b"not-png", "image/jpeg")},
+    )
+    assert bad_png.status_code == 400
+    assert bad_png.json()["detail"]["error"]["param"] == "image"
+
+    bad_size = client.post(
+        "/v1/images/variations",
+        data={"size": "768x768"},
+        files={"image": ("source.png", PNG_1X1, "image/png")},
+    )
+    assert bad_size.status_code == 400
+    assert bad_size.json()["detail"]["error"]["param"] == "size"
+
+
+def test_image_variation_backend_errors_are_json(tmp_path: Path) -> None:
+    client, backend = make_image_client(tmp_path)
+
+    def fail_variation(**kwargs) -> GeneratedImage:
+        raise Exception("diffusers exploded")
+
+    backend.variation = fail_variation  # type: ignore[method-assign]
+    response = client.post(
+        "/v1/images/variations",
+        data={"size": "512x512"},
+        files={"image": ("source.png", PNG_1X1, "image/png")},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["error"]["code"] == "image_variation_failed"
+
+
 def test_image_generation_rejects_unsupported_options(tmp_path: Path) -> None:
     client, _backend = make_image_client(tmp_path)
 
@@ -634,6 +718,25 @@ def test_image_auto_download_status_is_observable_during_load(tmp_path: Path, mo
     assert image_manager.status().is_loaded is True
 
 
+def test_image_status_does_not_block_when_manager_is_busy(tmp_path: Path) -> None:
+    settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json")
+    image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: FakeImageBackend())
+    settings.image_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+
+    image_manager._start_job("variation")
+    image_manager._lock.acquire()
+    try:
+        status = image_manager.status()
+    finally:
+        image_manager._lock.release()
+        image_manager._finish_job()
+
+    assert status.active_jobs == 1
+    assert status.current_operation == "variation"
+    assert status.downloaded is True
+
+
 def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
     client, _backend = make_image_client(tmp_path, write_model=False)
 
@@ -703,6 +806,50 @@ def test_image_edit_status_load_edit_and_unload(tmp_path: Path, monkeypatch) -> 
     assert backend.closed is True
 
 
+def test_unload_all_image_models_unloads_generation_and_edit(tmp_path: Path) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        image_idle_unload_seconds=0,
+        image_edit_idle_unload_seconds=0,
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    image_backend = FakeImageBackend()
+    image_edit_backend = FakeImageEditBackend()
+    image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: image_backend)
+    image_edit_manager = ImageEditManager(settings, backend_factory=lambda model_path, active_settings: image_edit_backend)
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    settings.image_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+    settings.image_edit_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+
+    client = TestClient(
+        create_app(
+            settings=settings,
+            manager=text_manager,
+            image_manager=image_manager,
+            image_edit_manager=image_edit_manager,
+        )
+    )
+    assert client.post("/v1/local/images/load", json={}).json()["is_loaded"] is True
+    assert client.post("/v1/local/images/edit/load", json={}).json()["is_loaded"] is True
+
+    response = client.post("/v1/local/images/unload/all")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_loaded"] is False
+    assert payload["generation"]["is_loaded"] is False
+    assert payload["edit"]["is_loaded"] is False
+    assert image_backend.closed is True
+    assert image_edit_backend.closed is True
+
+
 def test_image_edit_supports_url_response_and_multiple_outputs(tmp_path: Path, monkeypatch) -> None:
     client, backend = make_image_edit_client(tmp_path)
 
@@ -753,7 +900,7 @@ def test_image_edit_rejects_unsupported_options(tmp_path: Path) -> None:
 
     output_format = client.post(
         "/v1/images/edits",
-        data={"prompt": "hello", "output_format": "webp"},
+        data={"prompt": "hello", "output_format": "gif"},
         files={"image": ("base.png", b"base-bytes", "image/png")},
     )
     assert output_format.status_code == 400
