@@ -16,6 +16,76 @@ from .schemas import ChatCompletionRequest, CompletionRequest, EmbeddingRequest,
 from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup, validate_tool_choice
 
 
+COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
+    {
+        "surface": "Models",
+        "status": "supported",
+        "endpoints": ["GET /v1/models", "GET /v1/models/{model_id}"],
+        "notes": "Lists configured local text, embedding, image, and image edit model IDs.",
+    },
+    {
+        "surface": "Chat Completions",
+        "status": "supported",
+        "endpoints": ["POST /v1/chat/completions"],
+        "notes": "Supports text, multimodal content normalization, streaming, and translated Gemma tool calls.",
+    },
+    {
+        "surface": "Completions",
+        "status": "supported",
+        "endpoints": ["POST /v1/completions"],
+        "notes": "Legacy text completion compatibility over the local llama.cpp backend.",
+    },
+    {
+        "surface": "Responses",
+        "status": "supported",
+        "endpoints": [
+            "POST /v1/responses",
+            "GET /v1/responses/{response_id}",
+            "DELETE /v1/responses/{response_id}",
+            "GET /v1/responses/{response_id}/input_items",
+        ],
+        "notes": "Local in-memory response storage with text and function-call output normalization.",
+    },
+    {
+        "surface": "Embeddings",
+        "status": "supported",
+        "endpoints": ["POST /v1/embeddings"],
+        "notes": "Uses the configured local Sentence Transformers embedding backend.",
+    },
+    {
+        "surface": "Images",
+        "status": "supported",
+        "endpoints": ["POST /v1/images/generations", "POST /v1/images/variations", "POST /v1/images/edits"],
+        "notes": "Local Diffusers-backed generation, variation, and inpainting/edit compatibility.",
+    },
+    {
+        "surface": "Audio",
+        "status": "supported",
+        "endpoints": ["POST /v1/audio/speech", "POST /v1/audio/transcriptions", "POST /v1/audio/translations"],
+        "notes": "Local Kokoro TTS and whisper.cpp-compatible transcription/translation stack.",
+    },
+    {
+        "surface": "Files, Uploads, Batches, Fine-tuning, Vector Stores, Moderations",
+        "status": "unsupported",
+        "endpoints": [
+            "/v1/files",
+            "/v1/uploads",
+            "/v1/batches",
+            "/v1/fine_tuning/jobs",
+            "/v1/vector_stores",
+            "/v1/moderations",
+        ],
+        "notes": "These cloud/account or hosted-storage APIs are not implemented by the local inference host.",
+    },
+    {
+        "surface": "Administration, Containers, Skills, ChatKit, Realtime",
+        "status": "not_applicable",
+        "endpoints": [],
+        "notes": "Not registered. These require OpenAI-hosted account, organization, realtime, or cloud resources.",
+    },
+]
+
+
 def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManager) -> APIRouter:
     router = APIRouter(prefix="/v1")
     response_store: dict[str, dict[str, Any]] = {}
@@ -240,7 +310,48 @@ def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManag
             "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
         }
 
+    register_unsupported_routes(router)
     return router
+
+
+def register_unsupported_routes(router: APIRouter) -> None:
+    unsupported_routes = [
+        ("/files", ["GET", "POST"], "Files"),
+        ("/files/{file_id}", ["GET", "DELETE"], "Files"),
+        ("/files/{file_id}/content", ["GET"], "Files"),
+        ("/uploads", ["POST"], "Uploads"),
+        ("/uploads/{upload_id}", ["GET", "POST", "DELETE"], "Uploads"),
+        ("/batches", ["GET", "POST"], "Batches"),
+        ("/batches/{batch_id}", ["GET"], "Batches"),
+        ("/batches/{batch_id}/cancel", ["POST"], "Batches"),
+        ("/fine_tuning/jobs", ["GET", "POST"], "Fine-tuning"),
+        ("/fine_tuning/jobs/{job_id}", ["GET"], "Fine-tuning"),
+        ("/fine_tuning/jobs/{job_id}/cancel", ["POST"], "Fine-tuning"),
+        ("/vector_stores", ["GET", "POST"], "Vector Stores"),
+        ("/vector_stores/{vector_store_id}", ["GET", "POST", "DELETE"], "Vector Stores"),
+        ("/vector_stores/{vector_store_id}/files", ["GET", "POST"], "Vector Stores"),
+        ("/moderations", ["POST"], "Moderations"),
+    ]
+    for path, methods, surface in unsupported_routes:
+        router.add_api_route(
+            path,
+            _unsupported_route(surface),
+            methods=methods,
+            include_in_schema=False,
+        )
+
+
+def _unsupported_route(surface: str):
+    def route() -> None:
+        raise openai_error(
+            501,
+            f"The OpenAI {surface} API is not implemented by LAAS. This local host supports local inference endpoints only.",
+            type_="invalid_request_error",
+            param="endpoint",
+            code="unsupported_endpoint",
+        )
+
+    return route
 
 
 def _assert_model(requested_model: str | None, manager: ModelManager) -> None:

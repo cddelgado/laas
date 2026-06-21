@@ -1,0 +1,56 @@
+# OpenAI Compatibility Matrix
+
+LAAS is an OpenAI-compatible local inference host. It implements the endpoints
+that can run against local model files and returns explicit unsupported errors
+for selected cloud/account APIs.
+
+Reference scope: OpenAI's API reference groups current APIs into inference
+surfaces such as Responses, Chat Completions, Images, Audio, Embeddings, and
+Models, plus hosted/cloud surfaces such as Files, Uploads, Batches,
+Fine-tuning, Vector Stores, Realtime, Containers, Skills, and Administration.
+
+## Supported
+
+| Surface | LAAS endpoints | Notes |
+| --- | --- | --- |
+| Models | `GET /v1/models`, `GET /v1/models/{model_id}` | Lists configured local text, embedding, image, and image edit models. |
+| Chat Completions | `POST /v1/chat/completions` | Local Gemma chat with streaming, multimodal content normalization, and Gemma tool-call translation. |
+| Completions | `POST /v1/completions` | Legacy text completion compatibility over the local llama.cpp backend. |
+| Responses | `POST /v1/responses`, `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items` | Local in-memory response storage with text and function-call output normalization. |
+| Embeddings | `POST /v1/embeddings` | Local Sentence Transformers backend, defaulting to `bge-small-en-v1.5`. |
+| Images | `POST /v1/images/generations`, `POST /v1/images/variations`, `POST /v1/images/edits` | Local Diffusers generation, variation, and inpainting/edit compatibility. |
+| Audio | `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` | Local Kokoro TTS and whisper.cpp-compatible STT. |
+
+## Unsupported But Registered
+
+These routes return OpenAI-shaped `501` errors with
+`code: "unsupported_endpoint"` so generic clients get a predictable response.
+
+| Surface | Registered routes |
+| --- | --- |
+| Files | `GET/POST /v1/files`, `GET/DELETE /v1/files/{file_id}`, `GET /v1/files/{file_id}/content` |
+| Uploads | `POST /v1/uploads`, `GET/POST/DELETE /v1/uploads/{upload_id}` |
+| Batches | `GET/POST /v1/batches`, `GET /v1/batches/{batch_id}`, `POST /v1/batches/{batch_id}/cancel` |
+| Fine-tuning | `GET/POST /v1/fine_tuning/jobs`, `GET /v1/fine_tuning/jobs/{job_id}`, `POST /v1/fine_tuning/jobs/{job_id}/cancel` |
+| Vector Stores | `GET/POST /v1/vector_stores`, `GET/POST/DELETE /v1/vector_stores/{vector_store_id}`, `GET/POST /v1/vector_stores/{vector_store_id}/files` |
+| Moderations | `POST /v1/moderations` |
+
+## Not Applicable
+
+LAAS does not register Administration, Containers, Skills, ChatKit, or Realtime
+OpenAI cloud APIs. Those surfaces require OpenAI-hosted account, organization,
+session, or cloud execution resources.
+
+## Inspect Programmatically
+
+Use:
+
+```bash
+curl http://127.0.0.1:8000/v1/local/compatibility
+```
+
+or PowerShell:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/compatibility
+```

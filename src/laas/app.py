@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import FastAPI, File, Form, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
+from .diagnostics import collect_diagnostics
 from .embedding import EmbeddingManager, EmbeddingNotDownloadedError
 from .errors import openai_error
 from .image import (
@@ -30,7 +31,7 @@ from .image import (
     save_image_output,
 )
 from .manager import ModelManager, ModelNotDownloadedError
-from .openai_compat import _normalize_chat_response, build_openai_router
+from .openai_compat import COMPATIBILITY_MATRIX, _normalize_chat_response, build_openai_router
 from .schemas import (
     CreateVoiceSessionRequest,
     DownloadAudioRequest,
@@ -183,6 +184,10 @@ def create_app(
     def get_settings() -> dict[str, Any]:
         return active_settings.public_dict()
 
+    @app.get("/v1/local/diagnostics")
+    def diagnostics() -> dict[str, Any]:
+        return collect_diagnostics(active_settings)
+
     @app.patch("/v1/local/settings")
     def patch_settings(patch: SettingsPatch) -> dict[str, Any]:
         updates = patch.model_dump(exclude_none=True)
@@ -200,6 +205,10 @@ def create_app(
     @app.get("/v1/local/capabilities")
     def capabilities() -> dict[str, Any]:
         return active_manager.capabilities.model_dump()
+
+    @app.get("/v1/local/compatibility")
+    def compatibility() -> dict[str, Any]:
+        return {"object": "local.compatibility_matrix", "data": COMPATIBILITY_MATRIX}
 
     @app.post("/v1/local/models/download")
     def download_model(request: DownloadModelRequest) -> dict[str, Any]:

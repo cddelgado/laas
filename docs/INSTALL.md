@@ -863,6 +863,8 @@ Windows PowerShell:
 Invoke-RestMethod -Uri http://127.0.0.1:8000/health
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/models
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/models/status
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/diagnostics
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/compatibility
 ```
 
 macOS/Linux:
@@ -871,6 +873,15 @@ macOS/Linux:
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/v1/models
 curl http://127.0.0.1:8000/v1/local/models/status
+curl http://127.0.0.1:8000/v1/local/diagnostics
+curl http://127.0.0.1:8000/v1/local/compatibility
+```
+
+Check optional dependency and configured model status without starting the
+server:
+
+```bash
+laas diagnose
 ```
 
 Run tests:

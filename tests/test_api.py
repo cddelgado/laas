@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from laas.diagnostics import collect_diagnostics
 from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs
 from laas.embedding import EmbeddingManager, HashEmbeddingBackend
@@ -22,6 +23,7 @@ from laas.image import (
     ImageManager,
 )
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
+from laas.main import main as laas_main
 from laas.manager import ModelManager
 from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
 from laas.settings import Settings, default_model_dir
@@ -654,6 +656,72 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     image_status = client.get("/v1/local/images/status/all").json()
     assert image_status["generation"]["configured_model"] == "sdxl-turbo"
     assert image_status["edit"]["configured_model"] == "sd-1.5-inpainting"
+
+
+def test_diagnostics_endpoint_reports_runtime_and_actions(tmp_path: Path, monkeypatch) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        tts_ffmpeg_path="definitely-missing-ffmpeg",
+    )
+    client = make_client(tmp_path)
+    client.app.state.settings.tts_ffmpeg_path = settings.tts_ffmpeg_path
+
+    response = client.get("/v1/local/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "local.diagnostics"
+    assert payload["python"]["executable"]
+    assert payload["settings"]["model_dir"] == str(tmp_path)
+    assert "llama_cpp" in payload["packages"]
+    assert payload["ffmpeg"]["available"] is False
+    assert any(action["component"] == "ffmpeg" for action in payload["actions"])
+
+
+def test_collect_diagnostics_reports_missing_optional_import(monkeypatch, tmp_path: Path) -> None:
+    import importlib.util
+
+    original_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name: str, *args, **kwargs):
+        if name == "llama_cpp":
+            return None
+        return original_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    report = collect_diagnostics(Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json"))
+
+    assert report["packages"]["llama_cpp"]["available"] is False
+    assert any(action["component"] == "llama_cpp" for action in report["actions"])
+
+
+def test_cli_diagnose_prints_json(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    laas_main(["diagnose"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["object"] == "local.diagnostics"
+    assert "packages" in payload
+
+
+def test_compatibility_matrix_and_unsupported_openai_endpoints(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    matrix = client.get("/v1/local/compatibility")
+    assert matrix.status_code == 200
+    payload = matrix.json()
+    assert payload["object"] == "local.compatibility_matrix"
+    assert any(item["surface"] == "Embeddings" and item["status"] == "supported" for item in payload["data"])
+    assert any(item["surface"].startswith("Files") and item["status"] == "unsupported" for item in payload["data"])
+
+    files = client.get("/v1/files")
+    assert files.status_code == 501
+    assert files.json()["detail"]["error"]["code"] == "unsupported_endpoint"
+
+    batch = client.post("/v1/batches", json={})
+    assert batch.status_code == 501
+    assert batch.json()["detail"]["error"]["param"] == "endpoint"
 
 
 def test_load_chat_completion_and_unload(tmp_path: Path) -> None:

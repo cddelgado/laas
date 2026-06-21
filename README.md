@@ -21,6 +21,8 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/audio/speech`
 - `GET /v1/local/settings`
 - `PATCH /v1/local/settings`
+- `GET /v1/local/diagnostics`
+- `GET /v1/local/compatibility`
 - `GET /v1/local/models/status`
 - `POST /v1/local/models/download`
 - `POST /v1/local/models/load`
@@ -66,6 +68,9 @@ otherwise install the optional video extra so OpenCV can extract frames.
 
 Detailed environment, wheel, and install-order guidance is in
 [docs/INSTALL.md](docs/INSTALL.md).
+
+OpenAI endpoint support is tracked in
+[docs/OPENAI_COMPATIBILITY.md](docs/OPENAI_COMPATIBILITY.md).
 
 Windows PowerShell:
 
@@ -284,6 +289,12 @@ Show CLI options:
 laas --help
 ```
 
+Check installation and optional dependency status without starting the server:
+
+```powershell
+laas diagnose
+```
+
 Do not run `lass`, which is a misspelling. Do not run `.\laas` unless you have
 created a `laas` file in the repository root. In PowerShell, `.\laas` means
 "run a local file named `laas`"; it does not look up the installed
@@ -330,6 +341,8 @@ present:
 
 ```powershell
 Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/models/status
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/diagnostics
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/compatibility
 ```
 
 Manual download and load. The download endpoint fetches the configured main GGUF

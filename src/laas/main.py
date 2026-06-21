@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Callable
@@ -8,6 +9,7 @@ from typing import Callable
 import uvicorn
 
 from . import __version__
+from .diagnostics import collect_diagnostics
 from .manager import ModelManager
 from .settings import load_settings
 from .settings import Settings
@@ -33,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-download-prompt",
         action="store_true",
         help="Skip the interactive missing-model download prompt during startup.",
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["diagnose"],
+        help="Run a local command instead of starting the API server.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
@@ -87,6 +95,9 @@ def confirm_missing_model_downloads(
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     settings = load_settings()
+    if args.command == "diagnose":
+        print(json.dumps(collect_diagnostics(settings), indent=2))
+        return
     confirm_missing_model_downloads(
         settings,
         assume_yes=args.yes_download,
