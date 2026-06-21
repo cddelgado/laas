@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs
-from laas.image import GeneratedImage, ImageBackend, ImageManager
+from laas.image import GeneratedImage, ImageBackend, ImageEditBackend, ImageEditManager, ImageManager
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
 from laas.manager import ModelManager
 from laas.openai_compat import _normalize_chat_response, _normalize_completion_response
@@ -180,6 +180,19 @@ class FakeImageBackend(ImageBackend):
         self.closed = True
 
 
+class FakeImageEditBackend(ImageEditBackend):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def edit(self, **kwargs) -> GeneratedImage:
+        self.calls.append(kwargs)
+        return GeneratedImage(content=b"fake-edited-png", media_type="image/png")
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def make_audio_client(
     tmp_path: Path,
     *,
@@ -240,6 +253,38 @@ def make_image_client(
     return client, image_backend
 
 
+def make_image_edit_client(
+    tmp_path: Path,
+    *,
+    write_model: bool = True,
+    auto_download: bool = False,
+) -> tuple[TestClient, FakeImageEditBackend]:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        image_edit_idle_unload_seconds=0,
+        image_edit_auto_download=auto_download,
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    image_edit_backend = FakeImageEditBackend()
+    image_edit_manager = ImageEditManager(
+        settings,
+        backend_factory=lambda model_path, active_settings: image_edit_backend,
+    )
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    if write_model:
+        settings.image_edit_model_path.mkdir(parents=True, exist_ok=True)
+        (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+
+    client = TestClient(create_app(settings=settings, manager=text_manager, image_edit_manager=image_edit_manager))
+    return client, image_edit_backend
+
+
 def make_voice_client(
     tmp_path: Path,
     *,
@@ -293,11 +338,14 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     assert models["data"][0]["id"] == "gemma-4-e4b-it-q4_k_m"
     assert any(model["id"] == "laas-hash-embedding" for model in models["data"])
     assert any(model["id"] == "sdxl-turbo" for model in models["data"])
+    assert any(model["id"] == "sd-1.5-inpainting" for model in models["data"])
 
     embedding_model = client.get("/v1/models/laas-hash-embedding").json()
     assert embedding_model["id"] == "laas-hash-embedding"
     image_model = client.get("/v1/models/sdxl-turbo").json()
     assert image_model["id"] == "sdxl-turbo"
+    image_edit_model = client.get("/v1/models/sd-1.5-inpainting").json()
+    assert image_edit_model["id"] == "sd-1.5-inpainting"
 
     status = client.get("/v1/local/models/status").json()
     assert status["configured_model"] == "gemma-4-e4b-it-q4_k_m"
@@ -473,7 +521,7 @@ def test_image_generation_missing_model_requires_download(tmp_path: Path) -> Non
 def test_image_generation_auto_downloads_for_openai_client_path(tmp_path: Path, monkeypatch) -> None:
     client, backend = make_image_client(tmp_path, write_model=False, auto_download=True)
 
-    def fake_snapshot_download(*, repo_id, local_dir):
+    def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
         path = Path(local_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "model_index.json").write_text("{}", encoding="utf-8")
@@ -503,7 +551,7 @@ def test_image_auto_download_status_is_observable_during_load(tmp_path: Path, mo
     started = threading.Event()
     release = threading.Event()
 
-    def fake_snapshot_download(*, repo_id, local_dir):
+    def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
         started.set()
         assert release.wait(timeout=5)
         path = Path(local_dir)
@@ -541,7 +589,7 @@ def test_image_auto_download_status_is_observable_during_load(tmp_path: Path, mo
 def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
     client, _backend = make_image_client(tmp_path, write_model=False)
 
-    def fake_snapshot_download(*, repo_id, local_dir):
+    def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
         path = Path(local_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "model_index.json").write_text("{}", encoding="utf-8")
@@ -553,6 +601,182 @@ def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -
     assert response.status_code == 200
     assert response.json()["downloaded"] is True
     assert response.json()["model_id"] == "sdxl-turbo"
+
+
+def test_image_edit_status_load_edit_and_unload(tmp_path: Path, monkeypatch) -> None:
+    client, backend = make_image_edit_client(tmp_path)
+
+    status = client.get("/v1/local/images/edit/status").json()
+    assert status["configured_model"] == "sd-1.5-inpainting"
+    assert status["downloaded"] is True
+    assert status["is_loaded"] is False
+    assert status["default_size"] == "512x512"
+    assert status["strength"] == 0.8
+
+    loaded = client.post("/v1/local/images/edit/load", json={}).json()
+    assert loaded["is_loaded"] is True
+
+    monkeypatch.setattr("laas.app.prepare_inpaint_inputs", lambda **kwargs: ("base-image", "mask-image"))
+    response = client.post(
+        "/v1/images/edits",
+        data={
+            "model": "sd-1.5-inpainting",
+            "prompt": "add a brass lamp",
+            "size": "512x512",
+            "response_format": "b64_json",
+            "quality": "high",
+            "input_fidelity": "high",
+            "negative_prompt": "blurry",
+            "strength": "0.9",
+            "seed": "10",
+        },
+        files={
+            "image": ("base.png", b"base-bytes", "image/png"),
+            "mask": ("mask.png", b"mask-bytes", "image/png"),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert base64.b64decode(payload["data"][0]["b64_json"]) == b"fake-edited-png"
+    assert backend.calls[0]["prompt"] == "add a brass lamp"
+    assert backend.calls[0]["negative_prompt"] == "blurry"
+    assert backend.calls[0]["image"] == "base-image"
+    assert backend.calls[0]["mask_image"] == "mask-image"
+    assert backend.calls[0]["width"] == 512
+    assert backend.calls[0]["height"] == 512
+    assert backend.calls[0]["num_inference_steps"] == 35
+    assert backend.calls[0]["guidance_scale"] == 7.5
+    assert backend.calls[0]["strength"] == 0.65
+    assert backend.calls[0]["seed"] == 10
+
+    unloaded = client.post("/v1/local/images/edit/unload", json={}).json()
+    assert unloaded["is_loaded"] is False
+    assert backend.closed is True
+
+
+def test_image_edit_supports_url_response_and_multiple_outputs(tmp_path: Path, monkeypatch) -> None:
+    client, backend = make_image_edit_client(tmp_path)
+
+    monkeypatch.setattr("laas.app.prepare_inpaint_inputs", lambda **kwargs: ("base-image", "mask-image"))
+    response = client.post(
+        "/v1/images/edits",
+        data={
+            "prompt": "replace the window with a painting",
+            "n": "2",
+            "response_format": "url",
+            "seed": "50",
+        },
+        files={
+            "image": ("base.png", b"base-bytes", "image/png"),
+            "mask": ("mask.png", b"mask-bytes", "image/png"),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["data"]) == 2
+    assert backend.calls[0]["seed"] == 50
+    assert backend.calls[1]["seed"] == 51
+    first_image = client.get(payload["data"][0]["url"])
+    assert first_image.status_code == 200
+    assert first_image.headers["content-type"] == "image/png"
+    assert first_image.content == b"fake-edited-png"
+    assert len(list((tmp_path / "outputs" / "images").glob("*.png"))) == 2
+
+
+def test_image_edit_rejects_unsupported_options(tmp_path: Path) -> None:
+    client, _backend = make_image_edit_client(tmp_path)
+
+    unknown_model = client.post(
+        "/v1/images/edits",
+        data={"model": "missing", "prompt": "hello"},
+        files={"image": ("base.png", b"base-bytes", "image/png")},
+    )
+    assert unknown_model.status_code == 404
+
+    transparent = client.post(
+        "/v1/images/edits",
+        data={"prompt": "hello", "background": "transparent"},
+        files={"image": ("base.png", b"base-bytes", "image/png")},
+    )
+    assert transparent.status_code == 400
+    assert transparent.json()["detail"]["error"]["param"] == "background"
+
+    output_format = client.post(
+        "/v1/images/edits",
+        data={"prompt": "hello", "output_format": "webp"},
+        files={"image": ("base.png", b"base-bytes", "image/png")},
+    )
+    assert output_format.status_code == 400
+    assert output_format.json()["detail"]["error"]["param"] == "output_format"
+
+
+def test_image_edit_missing_model_requires_download(tmp_path: Path, monkeypatch) -> None:
+    client, _backend = make_image_edit_client(tmp_path, write_model=False, auto_download=False)
+
+    load_response = client.post("/v1/local/images/edit/load", json={"download_if_missing": False})
+    assert load_response.status_code == 409
+    assert load_response.json()["detail"]["error"]["code"] == "image_edit_model_not_downloaded"
+
+    monkeypatch.setattr("laas.app.prepare_inpaint_inputs", lambda **kwargs: ("base-image", "mask-image"))
+    edit_response = client.post(
+        "/v1/images/edits",
+        data={"prompt": "hello"},
+        files={
+            "image": ("base.png", b"base-bytes", "image/png"),
+            "mask": ("mask.png", b"mask-bytes", "image/png"),
+        },
+    )
+    assert edit_response.status_code == 409
+    assert edit_response.json()["detail"]["error"]["code"] == "image_edit_model_not_downloaded"
+
+
+def test_image_edit_auto_downloads_for_openai_client_path(tmp_path: Path, monkeypatch) -> None:
+    client, backend = make_image_edit_client(tmp_path, write_model=False, auto_download=True)
+
+    def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        path = Path(local_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "model_index.json").write_text("{}", encoding="utf-8")
+        return str(path)
+
+    monkeypatch.setattr("laas.image.snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr("laas.app.prepare_inpaint_inputs", lambda **kwargs: ("base-image", "mask-image"))
+    response = client.post(
+        "/v1/images/edits",
+        data={"prompt": "hello"},
+        files={
+            "image": ("base.png", b"base-bytes", "image/png"),
+            "mask": ("mask.png", b"mask-bytes", "image/png"),
+        },
+    )
+
+    assert response.status_code == 200
+    assert base64.b64decode(response.json()["data"][0]["b64_json"]) == b"fake-edited-png"
+    assert backend.calls[0]["prompt"] == "hello"
+    status = client.get("/v1/local/images/edit/status").json()
+    assert status["downloaded"] is True
+    assert status["download_in_progress"] is False
+    assert status["download_started_at"] is not None
+    assert status["download_finished_at"] is not None
+
+
+def test_image_edit_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
+    client, _backend = make_image_edit_client(tmp_path, write_model=False)
+
+    def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        path = Path(local_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "model_index.json").write_text("{}", encoding="utf-8")
+        return str(path)
+
+    monkeypatch.setattr("laas.image.snapshot_download", fake_snapshot_download)
+    response = client.post("/v1/local/images/edit/download", json={})
+
+    assert response.status_code == 200
+    assert response.json()["downloaded"] is True
+    assert response.json()["model_id"] == "sd-1.5-inpainting"
 
 
 def test_tool_call_translation(tmp_path: Path) -> None:

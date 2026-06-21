@@ -77,6 +77,15 @@ class Settings(BaseSettings):
     image_idle_unload_seconds: int = 900
     image_device: str = "auto"
     image_torch_dtype: str = "float16"
+    image_edit_model_id: str = "sd-1.5-inpainting"
+    image_edit_hf_repo_id: str = "stable-diffusion-v1-5/stable-diffusion-inpainting"
+    image_edit_default_size: str = "512x512"
+    image_edit_num_inference_steps: int = 25
+    image_edit_guidance_scale: float = 7.5
+    image_edit_strength: float = 0.8
+    image_edit_auto_load: bool = False
+    image_edit_auto_download: bool = True
+    image_edit_idle_unload_seconds: int = 900
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @field_validator("image_output_dir", mode="before")
@@ -115,6 +124,10 @@ class Settings(BaseSettings):
     @property
     def image_model_path(self) -> Path:
         return self.model_dir / self.image_hf_repo_id.replace("/", "__")
+
+    @property
+    def image_edit_model_path(self) -> Path:
+        return self.model_dir / self.image_edit_hf_repo_id.replace("/", "__")
 
     @property
     def resolved_image_output_dir(self) -> Path:
@@ -172,6 +185,15 @@ class Settings(BaseSettings):
             "image_idle_unload_seconds": self.image_idle_unload_seconds,
             "image_device": self.image_device,
             "image_torch_dtype": self.image_torch_dtype,
+            "image_edit_model_id": self.image_edit_model_id,
+            "image_edit_hf_repo_id": self.image_edit_hf_repo_id,
+            "image_edit_default_size": self.image_edit_default_size,
+            "image_edit_num_inference_steps": self.image_edit_num_inference_steps,
+            "image_edit_guidance_scale": self.image_edit_guidance_scale,
+            "image_edit_strength": self.image_edit_strength,
+            "image_edit_auto_load": self.image_edit_auto_load,
+            "image_edit_auto_download": self.image_edit_auto_download,
+            "image_edit_idle_unload_seconds": self.image_edit_idle_unload_seconds,
         }
 
 

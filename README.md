@@ -16,6 +16,7 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `GET /v1/responses/{response_id}/input_items`
 - `POST /v1/embeddings`
 - `POST /v1/images/generations`
+- `POST /v1/images/edits`
 - `POST /v1/audio/speech`
 - `GET /v1/local/settings`
 - `PATCH /v1/local/settings`
@@ -27,6 +28,10 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/images/download`
 - `POST /v1/local/images/load`
 - `POST /v1/local/images/unload`
+- `GET /v1/local/images/edit/status`
+- `POST /v1/local/images/edit/download`
+- `POST /v1/local/images/edit/load`
+- `POST /v1/local/images/edit/unload`
 - `GET /v1/local/audio/status`
 - `GET /v1/local/audio/voices`
 - `POST /v1/local/audio/download`
@@ -224,6 +229,14 @@ LAAS_IMAGE_OUTPUT_DIR=
 LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
+LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
+LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
+LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
+LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
+LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
+LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_AUTO_LOAD=false
+LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 ```
 
 ## Run
@@ -364,7 +377,7 @@ dependencies, start `laas`, then point any OpenAI-compatible image client at
 configured image snapshot on first use when `LAAS_IMAGE_AUTO_DOWNLOAD=true`,
 which is the default, then loads it and generates the image.
 
-Generate one base64 PNG image:
+Generate image URLs:
 
 ```python
 from openai import OpenAI
@@ -437,9 +450,51 @@ OpenAI image parameters are translated for SDXL Turbo where possible:
 and `background=opaque|auto` plus `moderation=auto|low` are accepted for client
 compatibility. `background=transparent` returns a clear unsupported-parameter
 error because SDXL Turbo does not generate alpha-channel transparent PNGs.
-Image edits and variations are not implemented yet. SDXL Turbo unloads after
+SDXL Turbo unloads after
 `LAAS_IMAGE_IDLE_UNLOAD_SECONDS` seconds of inactivity; set it to `0` to keep it
 loaded.
+
+Image edits use `stable-diffusion-v1-5/stable-diffusion-inpainting` through
+Diffusers. The edit model has separate load/download/unload lifecycle endpoints
+so it does not need to stay in memory with SDXL Turbo:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/images/edit/download `
+  -ContentType "application/json" `
+  -Body "{}"
+
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/images/edit/load `
+  -ContentType "application/json" `
+  -Body "{}"
+```
+
+OpenAI-compatible edit requests use multipart form data with `image`, `prompt`,
+and optional `mask`. Diffusers masks use white pixels for the area to repaint
+and black pixels for the area to preserve. If the uploaded mask has transparent
+pixels, LAAS treats transparent pixels as the edit area. If no mask is provided,
+the source image must have transparency so LAAS can derive the edit area from
+alpha.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
+
+edited = client.images.edit(
+    model="sd-1.5-inpainting",
+    image=open("base.png", "rb"),
+    mask=open("mask.png", "rb"),
+    prompt="replace the empty wall with a framed landscape painting",
+    size="512x512",
+    response_format="url",
+)
+print(edited.data[0].url)
+```
+
+The edit endpoint supports `response_format=b64_json`, `response_format=url`,
+`n >= 1`, `negative_prompt`, `strength`, `guidance_scale`,
+`num_inference_steps`, `seed`, `quality`, `input_fidelity`, `background`, and
+`moderation`. Image variations are not implemented yet.
 
 ## Local Voice Stack
 

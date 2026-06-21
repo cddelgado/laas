@@ -42,6 +42,11 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
                     created=1712966400,
                     owned_by="stability-local-diffusers",
                 ),
+                OpenAIModel(
+                    id=manager.settings.image_edit_model_id,
+                    created=1712966400,
+                    owned_by="stability-local-diffusers",
+                ),
             ]
         )
 
@@ -51,12 +56,15 @@ def build_openai_router(manager: ModelManager) -> APIRouter:
             manager.settings.model_id,
             manager.settings.embedding_model_id,
             manager.settings.image_model_id,
+            manager.settings.image_edit_model_id,
         }
         if model_id not in known_models:
             raise openai_error(404, f"The model '{model_id}' does not exist", param="model", code="model_not_found")
         if model_id == manager.settings.model_id:
             owned_by = "google-local-gguf"
         elif model_id == manager.settings.image_model_id:
+            owned_by = "stability-local-diffusers"
+        elif model_id == manager.settings.image_edit_model_id:
             owned_by = "stability-local-diffusers"
         else:
             owned_by = "laas-local"

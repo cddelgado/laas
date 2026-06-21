@@ -14,11 +14,14 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from .errors import openai_error
 from .image import (
+    ImageEditManager,
     ImageManager,
     ImageNotDownloadedError,
     ImageParameterError,
     cleanup_image_outputs,
+    normalize_image_edit_options,
     normalize_image_generation_options,
+    prepare_inpaint_inputs,
     save_image_output,
 )
 from .manager import ModelManager, ModelNotDownloadedError
@@ -54,12 +57,14 @@ def create_app(
     audio_manager: AudioManager | None = None,
     transcription_manager: TranscriptionManager | None = None,
     image_manager: ImageManager | None = None,
+    image_edit_manager: ImageEditManager | None = None,
 ) -> FastAPI:
     active_settings = settings or load_settings()
     active_manager = manager or ModelManager(active_settings)
     active_audio_manager = audio_manager or AudioManager(active_settings)
     active_transcription_manager = transcription_manager or TranscriptionManager(active_settings)
     active_image_manager = image_manager or ImageManager(active_settings)
+    active_image_edit_manager = image_edit_manager or ImageEditManager(active_settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -89,6 +94,11 @@ def create_app(
                 active_image_manager.load(download_if_missing=active_settings.image_auto_download)
             except ImageNotDownloadedError:
                 pass
+        if active_settings.image_edit_auto_load:
+            try:
+                active_image_edit_manager.load(download_if_missing=active_settings.image_edit_auto_download)
+            except ImageNotDownloadedError:
+                pass
         yield
 
     app = FastAPI(
@@ -102,6 +112,7 @@ def create_app(
     app.state.audio_manager = active_audio_manager
     app.state.transcription_manager = active_transcription_manager
     app.state.image_manager = active_image_manager
+    app.state.image_edit_manager = active_image_edit_manager
     app.state.voice_sessions = {}
 
     @app.get("/health")
@@ -113,6 +124,7 @@ def create_app(
             "transcription_model_loaded": active_transcription_manager.is_loaded,
             "voice_stack_loaded": active_audio_manager.is_loaded and active_transcription_manager.is_loaded,
             "image_model_loaded": active_image_manager.is_loaded,
+            "image_edit_model_loaded": active_image_edit_manager.is_loaded,
         }
 
     @app.get("/v1/local/settings")
@@ -218,6 +230,45 @@ def create_app(
     @app.post("/v1/local/images/unload")
     def unload_image_model() -> dict[str, Any]:
         return active_image_manager.unload().model_dump()
+
+    @app.get("/v1/local/images/edit/status")
+    def image_edit_status() -> dict[str, Any]:
+        return active_image_edit_manager.status().model_dump()
+
+    @app.post("/v1/local/images/edit/download")
+    def download_image_edit_model(request: DownloadImageRequest) -> dict[str, Any]:
+        if request.hf_repo_id:
+            active_settings.image_edit_hf_repo_id = request.hf_repo_id
+        path = active_image_edit_manager.download()
+        return {
+            "model_id": request.model_id or active_settings.image_edit_model_id,
+            "path": str(path),
+            "downloaded": True,
+        }
+
+    @app.post("/v1/local/images/edit/load")
+    def load_image_edit_model(request: LoadImageRequest) -> dict[str, Any]:
+        try:
+            return active_image_edit_manager.load(
+                model_id=request.model_id,
+                hf_repo_id=request.hf_repo_id,
+                download_if_missing=request.download_if_missing,
+            ).model_dump()
+        except ImageNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured image edit model is not downloaded. Call POST /v1/local/images/edit/download first, "
+                "or retry POST /v1/local/images/edit/load with download_if_missing=true.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="image_edit_model_not_downloaded",
+            ) from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="image_edit_backend_missing") from exc
+
+    @app.post("/v1/local/images/edit/unload")
+    def unload_image_edit_model() -> dict[str, Any]:
+        return active_image_edit_manager.unload().model_dump()
 
     @app.get("/v1/local/files/images/{filename}")
     def get_local_image_file(filename: str) -> FileResponse:
@@ -732,6 +783,116 @@ def create_app(
             raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
         except RuntimeError as exc:
             raise openai_error(503, str(exc), type_="server_error", code="image_backend_missing") from exc
+
+        return {
+            "created": int(time.time()),
+            "data": data,
+        }
+
+    @app.post("/v1/images/edits")
+    def create_image_edit(
+        request: Request,
+        prompt: str = Form(...),
+        image: UploadFile = File(...),
+        mask: UploadFile | None = File(None),
+        model: str | None = Form(None),
+        n: int = Form(1),
+        size: str | None = Form(None),
+        response_format: str | None = Form(None),
+        user: str | None = Form(None),
+        negative_prompt: str | None = Form(None),
+        num_inference_steps: int | None = Form(None),
+        guidance_scale: float | None = Form(None),
+        strength: float | None = Form(None),
+        seed: int | None = Form(None),
+        quality: str | None = Form(None),
+        background: str | None = Form(None),
+        input_fidelity: str | None = Form(None),
+        moderation: str | None = Form(None),
+        output_format: str | None = Form(None),
+    ) -> dict[str, Any]:
+        _ = user
+        response_format = response_format or active_settings.image_default_response_format
+        if response_format not in {"b64_json", "url"}:
+            raise openai_error(400, "response_format must be b64_json or url", param="response_format")
+        if output_format not in {None, "png"}:
+            raise openai_error(400, "only output_format=png is supported", param="output_format")
+        if n < 1:
+            raise openai_error(400, "n must be greater than or equal to 1", param="n")
+        if model and model != active_settings.image_edit_model_id:
+            raise openai_error(
+                404,
+                f"The image edit model '{model}' is not available. Configured image edit model is "
+                f"'{active_settings.image_edit_model_id}'.",
+                param="model",
+                code="model_not_found",
+            )
+        try:
+            options = normalize_image_edit_options(
+                prompt=prompt,
+                size=size if size and size != "auto" else active_settings.image_edit_default_size,
+                default_steps=active_settings.image_edit_num_inference_steps,
+                default_guidance_scale=active_settings.image_edit_guidance_scale,
+                default_strength=active_settings.image_edit_strength,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                strength=strength,
+                quality=quality,
+                background=background,
+                input_fidelity=input_fidelity,
+                moderation=moderation,
+            )
+            image_bytes = image.file.read()
+            mask_bytes = mask.file.read() if mask is not None else None
+            base_image, mask_image = prepare_inpaint_inputs(
+                image_bytes=image_bytes,
+                mask_bytes=mask_bytes,
+                width=options.width,
+                height=options.height,
+            )
+            cleanup_image_outputs(
+                output_dir=active_settings.resolved_image_output_dir,
+                retention_seconds=active_settings.image_output_retention_seconds,
+            )
+            data = []
+            for index in range(n):
+                request_seed = seed + index if seed is not None else None
+                edited = active_image_edit_manager.edit(
+                    prompt=options.prompt,
+                    negative_prompt=negative_prompt,
+                    image=base_image,
+                    mask_image=mask_image,
+                    width=options.width,
+                    height=options.height,
+                    num_inference_steps=options.num_inference_steps,
+                    guidance_scale=options.guidance_scale,
+                    strength=options.strength,
+                    seed=request_seed,
+                )
+                item = {"revised_prompt": options.prompt}
+                if response_format == "b64_json":
+                    item["b64_json"] = base64.b64encode(edited.content).decode("ascii")
+                else:
+                    path = save_image_output(
+                        content=edited.content,
+                        output_dir=active_settings.resolved_image_output_dir,
+                    )
+                    item["url"] = str(request.url_for("get_local_image_file", filename=path.name))
+                data.append(item)
+        except ImageNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured image edit model is not downloaded. Call POST /v1/local/images/edit/download first.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="image_edit_model_not_downloaded",
+            ) from exc
+        except ImageParameterError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param=exc.param) from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="image_edit_backend_missing") from exc
 
         return {
             "created": int(time.time()),

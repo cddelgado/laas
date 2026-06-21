@@ -87,6 +87,10 @@ class LocalImageStatus(BaseModel):
     last_download_error: str | None = None
 
 
+class LocalImageEditStatus(LocalImageStatus):
+    strength: float
+
+
 class DownloadAudioRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None

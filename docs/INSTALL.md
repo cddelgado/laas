@@ -346,12 +346,20 @@ LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
 LAAS_IMAGE_OUTPUT_DIR=
 LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_DOWNLOAD=true
+LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
+LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
+LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
+LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
+LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
+LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 ```
 
-The image snapshot uses the same `LAAS_MODEL_DIR` root as the GGUF model. The
-backend downloads a Diffusers snapshot directory rather than a single model
-file. By default, the OpenAI-compatible `POST /v1/images/generations` endpoint
-downloads the snapshot on first use, loads it, and then generates the image.
+The image snapshots use the same `LAAS_MODEL_DIR` root as the GGUF model. The
+backend downloads Diffusers snapshot directories rather than single model
+files. By default, the OpenAI-compatible `POST /v1/images/generations` and
+`POST /v1/images/edits` endpoints download their configured snapshots on first
+use, load them, and then return images.
 Use `GET /v1/local/images/status` from another terminal to inspect
 `download_in_progress`, `download_started_at`, `download_finished_at`, and
 `last_download_error` while the first request is running.
@@ -372,6 +380,27 @@ OpenAI image parameters are translated for SDXL Turbo where possible:
   LAAS does not add a local image moderation model.
 - `background=transparent` returns an unsupported-parameter error because SDXL
   Turbo does not generate transparent PNGs.
+
+`POST /v1/images/edits` uses `stable-diffusion-v1-5/stable-diffusion-inpainting`
+by default. It accepts multipart form data with `image`, `prompt`, and optional
+`mask`. Diffusers masks use white pixels for the area to repaint and black
+pixels for the area to preserve. If the uploaded mask has transparent pixels,
+LAAS treats transparent pixels as the edit area. If no mask is provided, the
+source image must have transparency so LAAS can derive the edit area from alpha.
+
+Local edit lifecycle endpoints:
+
+```text
+GET  /v1/local/images/edit/status
+POST /v1/local/images/edit/download
+POST /v1/local/images/edit/load
+POST /v1/local/images/edit/unload
+```
+
+The edit endpoint supports `response_format=b64_json`, `response_format=url`,
+`n >= 1`, `negative_prompt`, `strength`, `guidance_scale`,
+`num_inference_steps`, `seed`, `quality`, `input_fidelity`, `background`, and
+`moderation`.
 
 ## 6. Optional Local Voice Stack
 
@@ -493,6 +522,15 @@ LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
+LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
+LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
+LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
+LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
+LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
+LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_AUTO_LOAD=false
+LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
+LAAS_IMAGE_EDIT_IDLE_UNLOAD_SECONDS=900
 ```
 
 macOS/Linux `.env` example:
@@ -536,6 +574,15 @@ LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
+LAAS_IMAGE_EDIT_MODEL_ID=sd-1.5-inpainting
+LAAS_IMAGE_EDIT_HF_REPO_ID=stable-diffusion-v1-5/stable-diffusion-inpainting
+LAAS_IMAGE_EDIT_DEFAULT_SIZE=512x512
+LAAS_IMAGE_EDIT_NUM_INFERENCE_STEPS=25
+LAAS_IMAGE_EDIT_GUIDANCE_SCALE=7.5
+LAAS_IMAGE_EDIT_STRENGTH=0.8
+LAAS_IMAGE_EDIT_AUTO_LOAD=false
+LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
+LAAS_IMAGE_EDIT_IDLE_UNLOAD_SECONDS=900
 ```
 
 ## 8. Download/Load Behavior
