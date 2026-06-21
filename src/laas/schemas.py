@@ -367,6 +367,7 @@ class SettingsPatch(BaseModel):
     mmproj_repo_id: str | None = None
     mmproj_filename: str | None = None
     mmproj_required: bool | None = None
+    llm_audio_input_enabled: bool | None = None
     auto_load: bool | None = None
     auto_download: bool | None = None
     n_ctx: int | None = Field(default=None, gt=0)

@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     mmproj_repo_id: str | None = None
     mmproj_filename: str | None = "mmproj-gemma-4-E4B-it-Q8_0.gguf"
     mmproj_required: bool = True
+    llm_audio_input_enabled: bool = False
     auto_load: bool = False
     auto_download: bool = False
     n_ctx: int = 32768
@@ -165,6 +166,7 @@ class Settings(BaseSettings):
             "mmproj_repo_id": self.mmproj_repo_id,
             "mmproj_filename": self.mmproj_filename,
             "mmproj_required": self.mmproj_required,
+            "llm_audio_input_enabled": self.llm_audio_input_enabled,
             "auto_load": self.auto_load,
             "auto_download": self.auto_download,
             "n_ctx": self.n_ctx,

@@ -264,9 +264,10 @@ Video extraction is deterministic and bounded by these settings:
 | `video_frame_size` / `LAAS_VIDEO_FRAME_SIZE` | `768` | Maximum long-edge size for extracted JPEG frames. |
 
 For OpenAI-style audio input to Chat Completions, use `input_audio` content
-parts with base64 `data` and `format` set to `wav` or `mp3`. That path is
-native model audio input when the loaded Gemma/llama.cpp backend supports it.
-It does not silently transcribe through Whisper; explicit speech-to-text remains
+parts with base64 `data` and `format` set to `wav` or `mp3`. LAAS validates
+that shape, but native LLM audio input is disabled by default because the
+current local Gemma/llama.cpp MTMD handler only proves image support. It does
+not silently transcribe through Whisper; explicit speech-to-text remains
 `POST /v1/audio/transcriptions`.
 
 ```json
@@ -282,6 +283,12 @@ It does not silently transcribe through Whisper; explicit speech-to-text remains
 OpenAI Chat Completions audio output through `modalities: ["audio"]` is not
 native Gemma output in LAAS. Use `POST /v1/audio/speech` or the local voice
 stack for TTS.
+
+To audit image, video, and audio-input behavior against a running server:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\multimodal_fidelity_smoke.py --base-url http://127.0.0.1:8000
+```
 
 ## 5. Optional Local Image Generation
 

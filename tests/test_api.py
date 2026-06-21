@@ -77,8 +77,18 @@ def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool
     return TestClient(create_app(settings=settings, manager=manager, embedding_manager=embedding_manager))
 
 
-def make_client_with_backend(tmp_path: Path, backend: EchoBackend) -> TestClient:
-    settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json", idle_unload_seconds=0)
+def make_client_with_backend(
+    tmp_path: Path,
+    backend: EchoBackend,
+    *,
+    llm_audio_input_enabled: bool = False,
+) -> TestClient:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        llm_audio_input_enabled=llm_audio_input_enabled,
+    )
     manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: backend)
     embedding_manager = make_embedding_manager(settings)
     settings.model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -653,6 +663,9 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     assert status["downloaded"] is True
     assert status["mmproj_downloaded"] is True
     assert status["is_loaded"] is False
+    assert status["capabilities"]["vision"] is True
+    assert status["capabilities"]["video"] is True
+    assert status["capabilities"]["audio_input"] is False
 
     image_status = client.get("/v1/local/images/status/all").json()
     assert image_status["generation"]["configured_model"] == "sdxl-turbo"
@@ -1912,9 +1925,38 @@ def test_video_frames_translate_to_image_parts(tmp_path: Path) -> None:
     assert "summarize video" in response["output_text"]
 
 
-def test_chat_completion_input_audio_validates_and_reaches_backend(tmp_path: Path) -> None:
+def test_chat_completion_rejects_input_audio_by_default(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_audio",
+                            "input_audio": {
+                                "data": base64.b64encode(b"fake wav").decode("ascii"),
+                                "format": "wav",
+                            },
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["detail"]["error"]
+    assert error["param"] == "messages"
+    assert "audio inputs" in error["message"]
+
+
+def test_chat_completion_input_audio_validates_and_reaches_backend_when_enabled(tmp_path: Path) -> None:
     backend = MessageCapturingBackend()
-    client = make_client_with_backend(tmp_path, backend)
+    client = make_client_with_backend(tmp_path, backend, llm_audio_input_enabled=True)
 
     response = client.post(
         "/v1/chat/completions",
@@ -1957,7 +1999,7 @@ def test_chat_completion_input_audio_validates_and_reaches_backend(tmp_path: Pat
     ],
 )
 def test_chat_completion_rejects_invalid_input_audio(tmp_path: Path, audio: dict[str, str], code: str) -> None:
-    client = make_client(tmp_path)
+    client = make_client_with_backend(tmp_path, EchoBackend(), llm_audio_input_enabled=True)
 
     response = client.post(
         "/v1/chat/completions",

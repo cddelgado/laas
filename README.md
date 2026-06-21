@@ -58,11 +58,15 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/voice/sessions/{session_id}/turns`
 - `WS /v1/local/voice/sessions/{session_id}/realtime`
 - `GET /v1/local/capabilities`
+- `GET /v1/local/concurrency/status`
 
 The OpenAI-compatible endpoints accept OpenAI-style text, tool calls, image
 parts, and Responses API inputs. Gemma video input is translated to sampled
-image frames. If the request already supplies `frames`, LAAS uses them directly;
-otherwise install the optional video extra so OpenCV can extract frames.
+image frames. Native LLM audio input is disabled by default because the current
+local Gemma/llama.cpp handler only proves image support; use Whisper endpoints
+for speech-to-text. If the request already supplies video `frames`, LAAS uses
+them directly; otherwise install the optional video extra so OpenCV can extract
+frames.
 
 ## Install
 
@@ -71,6 +75,9 @@ Detailed environment, wheel, and install-order guidance is in
 
 OpenAI endpoint support is tracked in
 [docs/OPENAI_COMPATIBILITY.md](docs/OPENAI_COMPATIBILITY.md).
+
+Gemma multimodal support and live audit commands are tracked in
+[docs/GEMMA_MULTIMODAL.md](docs/GEMMA_MULTIMODAL.md).
 
 Windows PowerShell:
 
@@ -834,6 +841,7 @@ Optional heavier checks:
 ```bash
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image --include-image-edit --include-voice
+python scripts/multimodal_fidelity_smoke.py --base-url http://127.0.0.1:8000
 ```
 
 Live pytest smoke tests are disabled unless the relevant environment variables
@@ -844,6 +852,7 @@ full commands and download-safety switch.
 ## Notes
 
 Gemma 4 E4B is exposed as a text-output model with text, tool-call, image,
-video-as-frames, audio-input, and reasoning capabilities. LAAS validates request
+video-as-frames, and reasoning capabilities. Native Chat Completions audio input
+is off by default until a local backend proves support. LAAS validates request
 capabilities before sending prompts to the backend and preserves OpenAI response
 shapes where practical for local inference.

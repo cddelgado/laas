@@ -24,12 +24,15 @@ class ModelNotDownloadedError(RuntimeError):
 class ModelManager:
     def __init__(self, settings: Settings, backend_factory: BackendFactory | None = None) -> None:
         self.settings = settings
-        self.capabilities = ModelCapabilities()
         self._backend_factory = backend_factory or self._default_backend_factory
         self._backend: InferenceBackend | None = None
         self._loaded_model: str | None = None
         self._last_used_at: float | None = None
         self._lock = threading.RLock()
+
+    @property
+    def capabilities(self) -> ModelCapabilities:
+        return capabilities_from_settings(self.settings)
 
     @property
     def loaded_model(self) -> str | None:
@@ -188,3 +191,12 @@ class ModelManager:
             verbose=settings.verbose_llama,
             mmproj_path=settings.mmproj_path if settings.mmproj_required else None,
         )
+
+
+def capabilities_from_settings(settings: Settings) -> ModelCapabilities:
+    multimodal_projector_configured = bool(settings.mmproj_required and settings.mmproj_filename)
+    return ModelCapabilities(
+        vision=multimodal_projector_configured,
+        video=multimodal_projector_configured,
+        audio_input=settings.llm_audio_input_enabled,
+    )
