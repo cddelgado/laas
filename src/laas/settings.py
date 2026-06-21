@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     image_idle_unload_seconds: int = 900
     image_device: str = "auto"
     image_torch_dtype: str = "float16"
+    image_exclusive_load: bool = True
     image_variation_default_size: str = "512x512"
     image_variation_num_inference_steps: int = 4
     image_variation_guidance_scale: float = 0.0
@@ -192,6 +193,7 @@ class Settings(BaseSettings):
             "image_idle_unload_seconds": self.image_idle_unload_seconds,
             "image_device": self.image_device,
             "image_torch_dtype": self.image_torch_dtype,
+            "image_exclusive_load": self.image_exclusive_load,
             "image_variation_default_size": self.image_variation_default_size,
             "image_variation_num_inference_steps": self.image_variation_num_inference_steps,
             "image_variation_guidance_scale": self.image_variation_guidance_scale,

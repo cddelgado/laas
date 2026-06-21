@@ -382,6 +382,7 @@ class SettingsPatch(BaseModel):
     image_idle_unload_seconds: int | None = Field(default=None, ge=0)
     image_device: str | None = None
     image_torch_dtype: str | None = None
+    image_exclusive_load: bool | None = None
     image_variation_default_size: str | None = None
     image_variation_num_inference_steps: int | None = Field(default=None, gt=0)
     image_variation_guidance_scale: float | None = None

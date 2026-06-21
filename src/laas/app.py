@@ -147,6 +147,14 @@ def create_app(
             item["url"] = str(request.url_for("get_local_image_file", filename=path.name))
         return item
 
+    def prepare_image_generation_slot() -> None:
+        if active_settings.image_exclusive_load and active_image_edit_manager.is_loaded:
+            active_image_edit_manager.unload()
+
+    def prepare_image_edit_slot() -> None:
+        if active_settings.image_exclusive_load and active_image_manager.is_loaded:
+            active_image_manager.unload()
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
@@ -224,6 +232,25 @@ def create_app(
     def unload_model() -> dict[str, Any]:
         return active_manager.unload().model_dump()
 
+    @app.post("/v1/local/unload/all")
+    def unload_all_local_models() -> dict[str, Any]:
+        text = active_manager.unload().model_dump()
+        audio = active_audio_manager.unload().model_dump()
+        transcription = active_transcription_manager.unload().model_dump()
+        images = unload_all_image_models()
+        return {
+            "text": text,
+            "audio": audio,
+            "transcription": transcription,
+            "images": images,
+            "is_loaded": (
+                text["is_loaded"]
+                or audio["is_loaded"]
+                or transcription["is_loaded"]
+                or images["is_loaded"]
+            ),
+        }
+
     @app.get("/v1/local/images/status")
     def image_status() -> dict[str, Any]:
         return active_image_manager.status().model_dump()
@@ -249,6 +276,7 @@ def create_app(
     @app.post("/v1/local/images/load")
     def load_image_model(request: LoadImageRequest) -> dict[str, Any]:
         try:
+            prepare_image_generation_slot()
             return active_image_manager.load(
                 model_id=request.model_id,
                 hf_repo_id=request.hf_repo_id,
@@ -298,6 +326,7 @@ def create_app(
     @app.post("/v1/local/images/edit/load")
     def load_image_edit_model(request: LoadImageRequest) -> dict[str, Any]:
         try:
+            prepare_image_edit_slot()
             return active_image_edit_manager.load(
                 model_id=request.model_id,
                 hf_repo_id=request.hf_repo_id,
@@ -787,6 +816,7 @@ def create_app(
                 code="model_not_found",
             )
         try:
+            prepare_image_generation_slot()
             output_format = normalize_image_output_format(payload.output_format)
             options = normalize_image_generation_options(
                 prompt=payload.prompt,
@@ -881,6 +911,7 @@ def create_app(
                 code="model_not_found",
             )
         try:
+            prepare_image_generation_slot()
             output_format = normalize_image_output_format(output_format)
             options = normalize_image_variation_options(
                 size=size,
@@ -986,6 +1017,7 @@ def create_app(
                 code="model_not_found",
             )
         try:
+            prepare_image_edit_slot()
             resolved_output_format = normalize_image_output_format(output_format)
             options = normalize_image_edit_options(
                 prompt=prompt,

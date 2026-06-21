@@ -850,6 +850,97 @@ def test_unload_all_image_models_unloads_generation_and_edit(tmp_path: Path) -> 
     assert image_edit_backend.closed is True
 
 
+def test_image_exclusive_load_unloads_other_image_pipeline(tmp_path: Path) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        image_idle_unload_seconds=0,
+        image_edit_idle_unload_seconds=0,
+        image_exclusive_load=True,
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    image_backend = FakeImageBackend()
+    image_edit_backend = FakeImageEditBackend()
+    image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: image_backend)
+    image_edit_manager = ImageEditManager(settings, backend_factory=lambda model_path, active_settings: image_edit_backend)
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    settings.image_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+    settings.image_edit_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+
+    client = TestClient(
+        create_app(
+            settings=settings,
+            manager=text_manager,
+            image_manager=image_manager,
+            image_edit_manager=image_edit_manager,
+        )
+    )
+
+    assert client.post("/v1/local/images/edit/load", json={}).json()["is_loaded"] is True
+    assert client.post("/v1/local/images/load", json={}).json()["is_loaded"] is True
+    assert image_edit_backend.closed is True
+    assert client.get("/v1/local/images/edit/status").json()["is_loaded"] is False
+
+    assert client.post("/v1/local/images/edit/load", json={}).json()["is_loaded"] is True
+    assert image_backend.closed is True
+    assert client.get("/v1/local/images/status").json()["is_loaded"] is False
+
+
+def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        image_idle_unload_seconds=0,
+        image_edit_idle_unload_seconds=0,
+        image_exclusive_load=False,
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    image_backend = FakeImageBackend()
+    image_edit_backend = FakeImageEditBackend()
+    image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: image_backend)
+    image_edit_manager = ImageEditManager(settings, backend_factory=lambda model_path, active_settings: image_edit_backend)
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    settings.image_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+    settings.image_edit_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+
+    client = TestClient(
+        create_app(
+            settings=settings,
+            manager=text_manager,
+            image_manager=image_manager,
+            image_edit_manager=image_edit_manager,
+        )
+    )
+
+    assert client.post("/v1/local/models/load", json={}).json()["is_loaded"] is True
+    assert client.post("/v1/local/images/load", json={}).json()["is_loaded"] is True
+    assert client.post("/v1/local/images/edit/load", json={}).json()["is_loaded"] is True
+
+    response = client.post("/v1/local/unload/all")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_loaded"] is False
+    assert payload["text"]["is_loaded"] is False
+    assert payload["images"]["generation"]["is_loaded"] is False
+    assert payload["images"]["edit"]["is_loaded"] is False
+    assert image_backend.closed is True
+    assert image_edit_backend.closed is True
+
+
 def test_image_edit_supports_url_response_and_multiple_outputs(tmp_path: Path, monkeypatch) -> None:
     client, backend = make_image_edit_client(tmp_path)
 

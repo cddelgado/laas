@@ -346,6 +346,7 @@ LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
 LAAS_IMAGE_OUTPUT_DIR=
 LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_DOWNLOAD=true
+LAAS_IMAGE_EXCLUSIVE_LOAD=true
 LAAS_IMAGE_VARIATION_DEFAULT_SIZE=512x512
 LAAS_IMAGE_VARIATION_NUM_INFERENCE_STEPS=4
 LAAS_IMAGE_VARIATION_GUIDANCE_SCALE=0.0
@@ -439,6 +440,14 @@ The edit endpoint supports `response_format=b64_json`, `response_format=url`,
 Use `GET /v1/local/images/status/all` to inspect generation and edit model
 status together, including active image jobs and the last image job error.
 Use `POST /v1/local/images/unload/all` to unload both image pipelines at once.
+By default, `LAAS_IMAGE_EXCLUSIVE_LOAD=true` means loading or using generation
+and variation unloads the image edit pipeline first, and loading or using image
+edits unloads the generation/variation pipeline first. This keeps SDXL Turbo and
+SD 1.5 inpainting from sitting in memory together unless you explicitly disable
+exclusive loading.
+
+Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
+and both image pipelines in one request.
 
 ## 6. Optional Local Voice Stack
 
@@ -560,6 +569,7 @@ LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
+LAAS_IMAGE_EXCLUSIVE_LOAD=true
 LAAS_IMAGE_VARIATION_DEFAULT_SIZE=512x512
 LAAS_IMAGE_VARIATION_NUM_INFERENCE_STEPS=4
 LAAS_IMAGE_VARIATION_GUIDANCE_SCALE=0.0
@@ -618,6 +628,7 @@ LAAS_IMAGE_OUTPUT_RETENTION_SECONDS=86400
 LAAS_IMAGE_AUTO_LOAD=false
 LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
+LAAS_IMAGE_EXCLUSIVE_LOAD=true
 LAAS_IMAGE_VARIATION_DEFAULT_SIZE=512x512
 LAAS_IMAGE_VARIATION_NUM_INFERENCE_STEPS=4
 LAAS_IMAGE_VARIATION_GUIDANCE_SCALE=0.0
