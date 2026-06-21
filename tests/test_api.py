@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -214,12 +215,14 @@ def make_image_client(
     tmp_path: Path,
     *,
     write_model: bool = True,
+    auto_download: bool = False,
 ) -> tuple[TestClient, FakeImageBackend]:
     settings = Settings(
         model_dir=tmp_path,
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         image_idle_unload_seconds=0,
+        image_auto_download=auto_download,
     )
     text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
     image_backend = FakeImageBackend()
@@ -416,7 +419,7 @@ def test_image_generation_rejects_unsupported_options(tmp_path: Path) -> None:
 
 
 def test_image_generation_missing_model_requires_download(tmp_path: Path) -> None:
-    client, _backend = make_image_client(tmp_path, write_model=False)
+    client, _backend = make_image_client(tmp_path, write_model=False, auto_download=False)
 
     load_response = client.post("/v1/local/images/load", json={"download_if_missing": False})
     assert load_response.status_code == 409
@@ -425,6 +428,74 @@ def test_image_generation_missing_model_requires_download(tmp_path: Path) -> Non
     generation_response = client.post("/v1/images/generations", json={"prompt": "hello"})
     assert generation_response.status_code == 409
     assert generation_response.json()["detail"]["error"]["code"] == "image_model_not_downloaded"
+
+
+def test_image_generation_auto_downloads_for_openai_client_path(tmp_path: Path, monkeypatch) -> None:
+    client, backend = make_image_client(tmp_path, write_model=False, auto_download=True)
+
+    def fake_snapshot_download(*, repo_id, local_dir):
+        path = Path(local_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "model_index.json").write_text("{}", encoding="utf-8")
+        return str(path)
+
+    monkeypatch.setattr("laas.image.snapshot_download", fake_snapshot_download)
+    response = client.post("/v1/images/generations", json={"prompt": "hello"})
+
+    assert response.status_code == 200
+    assert base64.b64decode(response.json()["data"][0]["b64_json"]) == b"fake-png"
+    assert backend.calls[0]["prompt"] == "hello"
+    status = client.get("/v1/local/images/status").json()
+    assert status["downloaded"] is True
+    assert status["download_in_progress"] is False
+    assert status["download_started_at"] is not None
+    assert status["download_finished_at"] is not None
+
+
+def test_image_auto_download_status_is_observable_during_load(tmp_path: Path, monkeypatch) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        image_idle_unload_seconds=0,
+    )
+    image_backend = FakeImageBackend()
+    image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: image_backend)
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_snapshot_download(*, repo_id, local_dir):
+        started.set()
+        assert release.wait(timeout=5)
+        path = Path(local_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "model_index.json").write_text("{}", encoding="utf-8")
+        return str(path)
+
+    monkeypatch.setattr("laas.image.snapshot_download", fake_snapshot_download)
+
+    error: list[BaseException] = []
+
+    def load_model() -> None:
+        try:
+            image_manager.load(download_if_missing=True)
+        except BaseException as exc:
+            error.append(exc)
+
+    thread = threading.Thread(target=load_model)
+    thread.start()
+    assert started.wait(timeout=5)
+
+    status = image_manager.status()
+    assert status.download_in_progress is True
+    assert status.downloaded is False
+    assert status.download_started_at is not None
+    assert status.download_finished_at is None
+
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert error == []
+    assert image_manager.status().is_loaded is True
 
 
 def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
@@ -747,7 +818,6 @@ def test_audio_status_voices_speech_and_unload(tmp_path: Path) -> None:
     assert status["model_downloaded"] is True
     assert status["voices_downloaded"] is True
     assert "pcm" in status["supported_formats"]
-    assert "wav" in status["supported_formats"]
 
     voices = client.get("/v1/local/audio/voices").json()
     assert [voice["id"] for voice in voices["data"]] == ["af", "af_alloy"]

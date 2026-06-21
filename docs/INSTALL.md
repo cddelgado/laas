@@ -265,11 +265,16 @@ LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
 LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
+LAAS_IMAGE_AUTO_DOWNLOAD=true
 ```
 
 The image snapshot uses the same `LAAS_MODEL_DIR` root as the GGUF model. The
 backend downloads a Diffusers snapshot directory rather than a single model
-file.
+file. By default, the OpenAI-compatible `POST /v1/images/generations` endpoint
+downloads the snapshot on first use, loads it, and then generates the image.
+Use `GET /v1/local/images/status` from another terminal to inspect
+`download_in_progress`, `download_started_at`, `download_finished_at`, and
+`last_download_error` while the first request is running.
 
 ## 6. Optional Local Voice Stack
 
@@ -386,7 +391,7 @@ LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
 LAAS_IMAGE_AUTO_LOAD=false
-LAAS_IMAGE_AUTO_DOWNLOAD=false
+LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
 ```
 
@@ -426,7 +431,7 @@ LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
 LAAS_IMAGE_AUTO_LOAD=false
-LAAS_IMAGE_AUTO_DOWNLOAD=false
+LAAS_IMAGE_AUTO_DOWNLOAD=true
 LAAS_IMAGE_IDLE_UNLOAD_SECONDS=900
 ```
 

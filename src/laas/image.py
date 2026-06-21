@@ -112,7 +112,12 @@ class ImageManager:
         self._backend: ImageBackend | None = None
         self._loaded_model: str | None = None
         self._last_used_at: float | None = None
+        self._download_in_progress = False
+        self._download_started_at: float | None = None
+        self._download_finished_at: float | None = None
+        self._last_download_error: str | None = None
         self._lock = threading.RLock()
+        self._download_lock = threading.Lock()
 
     @property
     def is_loaded(self) -> bool:
@@ -144,15 +149,41 @@ class ImageManager:
                 torch_dtype=self.settings.image_torch_dtype,
                 idle_unload_seconds=self.settings.image_idle_unload_seconds,
                 last_used_at=self._last_used_at,
+                download_in_progress=self._download_in_progress,
+                download_started_at=self._download_started_at,
+                download_finished_at=self._download_finished_at,
+                last_download_error=self._last_download_error,
             )
 
     def download(self, *, hf_repo_id: str | None = None) -> Path:
-        if hf_repo_id:
-            self.settings.image_hf_repo_id = hf_repo_id
-        local_dir = self.settings.image_model_path
-        local_dir.mkdir(parents=True, exist_ok=True)
-        downloaded = snapshot_download(repo_id=self.settings.image_hf_repo_id, local_dir=local_dir)
-        return Path(downloaded)
+        with self._download_lock:
+            if hf_repo_id:
+                self.settings.image_hf_repo_id = hf_repo_id
+            local_dir = self.settings.image_model_path
+            local_dir.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                self._download_in_progress = True
+                self._download_started_at = time.time()
+                self._download_finished_at = None
+                self._last_download_error = None
+            print(
+                f"Downloading image model snapshot {self.settings.image_hf_repo_id} to {local_dir}...",
+                flush=True,
+            )
+            try:
+                downloaded = snapshot_download(repo_id=self.settings.image_hf_repo_id, local_dir=local_dir)
+            except Exception as exc:
+                with self._lock:
+                    self._download_in_progress = False
+                    self._download_finished_at = time.time()
+                    self._last_download_error = str(exc)
+                print(f"Image model download failed: {exc}", flush=True)
+                raise
+            with self._lock:
+                self._download_in_progress = False
+                self._download_finished_at = time.time()
+            print(f"Image model snapshot ready at {downloaded}", flush=True)
+            return Path(downloaded)
 
     def load(
         self,
@@ -161,14 +192,18 @@ class ImageManager:
         hf_repo_id: str | None = None,
         download_if_missing: bool = True,
     ) -> LocalImageStatus:
+        needs_download = False
+        desired_model = model_id or self.settings.image_model_id
         with self._lock:
-            desired_model = model_id or self.settings.image_model_id
             if self._backend is not None and self._loaded_model == desired_model:
                 self._last_used_at = time.time()
                 return self.status()
 
             if self._backend is not None:
-                self.unload()
+                self._backend.close()
+                self._backend = None
+                self._loaded_model = None
+                self._last_used_at = None
 
             if hf_repo_id:
                 self.settings.image_hf_repo_id = hf_repo_id
@@ -176,7 +211,22 @@ class ImageManager:
             if not self._is_downloaded():
                 if not download_if_missing:
                     raise ImageNotDownloadedError(self.settings.image_model_path)
-                self.download()
+                needs_download = True
+
+        if needs_download:
+            self.download()
+
+        with self._lock:
+            if self._backend is not None and self._loaded_model == desired_model:
+                self._last_used_at = time.time()
+                return self.status()
+
+            if self._backend is not None:
+                self._backend.close()
+                self._backend = None
+                self._loaded_model = None
+                self._last_used_at = None
+
             if not self._is_downloaded():
                 raise ImageNotDownloadedError(self.settings.image_model_path)
 

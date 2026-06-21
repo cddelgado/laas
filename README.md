@@ -191,7 +191,7 @@ LAAS_IMAGE_DEFAULT_SIZE=768x768
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
 LAAS_IMAGE_AUTO_LOAD=false
-LAAS_IMAGE_AUTO_DOWNLOAD=false
+LAAS_IMAGE_AUTO_DOWNLOAD=true
 ```
 
 ## Run
@@ -327,7 +327,46 @@ inactivity. Set it to `0` to disable idle unloading.
 ## Local Image Generation
 
 The first local image backend is SDXL Turbo through Diffusers. Install the image
-dependencies, start `laas`, then download and load the configured snapshot:
+dependencies, start `laas`, then point any OpenAI-compatible image client at
+`http://127.0.0.1:8000/v1`. `POST /v1/images/generations` downloads the
+configured image snapshot on first use when `LAAS_IMAGE_AUTO_DOWNLOAD=true`,
+which is the default, then loads it and generates the image.
+
+Generate one base64 PNG image:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
+
+image = client.images.generate(
+    model="sdxl-turbo",
+    prompt="a cinematic photo of a tiny robot repairing a neon sign",
+    size="768x768",
+    n=1,
+    response_format="b64_json",
+)
+print(image.data[0].b64_json[:80])
+```
+
+While the first request is downloading, check progress from another terminal:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/images/status
+```
+
+macOS/Linux:
+
+```bash
+curl http://127.0.0.1:8000/v1/local/images/status
+```
+
+The status response includes `download_in_progress`, `download_started_at`,
+`download_finished_at`, and `last_download_error`. The server console also logs
+when the Hugging Face snapshot download starts, finishes, or fails.
+
+Manual download and load endpoints are still available for prewarming or for
+setups that choose `LAAS_IMAGE_AUTO_DOWNLOAD=false`:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/images/download `
@@ -349,23 +388,6 @@ curl -X POST http://127.0.0.1:8000/v1/local/images/download \
 curl -X POST http://127.0.0.1:8000/v1/local/images/load \
   -H "Content-Type: application/json" \
   -d "{}"
-```
-
-Generate one base64 PNG image:
-
-```python
-from openai import OpenAI
-
-client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
-
-image = client.images.generate(
-    model="sdxl-turbo",
-    prompt="a cinematic photo of a tiny robot repairing a neon sign",
-    size="768x768",
-    n=1,
-    response_format="b64_json",
-)
-print(image.data[0].b64_json[:80])
 ```
 
 The MVP supports `n=1` and `response_format=b64_json`. Image edits and

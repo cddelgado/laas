@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     image_num_inference_steps: int = 2
     image_guidance_scale: float = 0.0
     image_auto_load: bool = False
-    image_auto_download: bool = False
+    image_auto_download: bool = True
     image_idle_unload_seconds: int = 900
     image_device: str = "auto"
     image_torch_dtype: str = "float16"

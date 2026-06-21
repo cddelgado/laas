@@ -79,6 +79,10 @@ class LocalImageStatus(BaseModel):
     torch_dtype: str
     idle_unload_seconds: int
     last_used_at: float | None = None
+    download_in_progress: bool = False
+    download_started_at: float | None = None
+    download_finished_at: float | None = None
+    last_download_error: str | None = None
 
 
 class DownloadAudioRequest(BaseModel):
