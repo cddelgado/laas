@@ -15,6 +15,7 @@ from .multimodal import VideoExtractionConfig, normalize_chat_messages, normaliz
 from .schemas import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, ModelList, OpenAIModel, ResponseRequest
 from .settings import Settings
 from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup, validate_tool_choice
+from .concurrency import ConcurrencyCoordinator
 
 
 COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
@@ -87,7 +88,11 @@ COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
 ]
 
 
-def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManager) -> APIRouter:
+def build_openai_router(
+    manager: ModelManager,
+    embedding_manager: EmbeddingManager,
+    coordinator: ConcurrencyCoordinator | None = None,
+) -> APIRouter:
     router = APIRouter(prefix="/v1")
     response_store: dict[str, dict[str, Any]] = {}
 
@@ -147,38 +152,98 @@ def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManag
             video_config=_video_config(manager.settings),
         )
         tools = normalize_tools_for_responses(request.tools)
-        backend = _get_backend(manager)
-        result = backend.chat_completion(
-            messages=messages,
-            model=manager.settings.model_id,
-            tools=tools,
-            tool_choice=request.tool_choice,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            max_tokens=request.requested_max_tokens,
-            stream=request.stream,
-            extra_params=_chat_sampling_params(request),
-        )
-        if request.stream:
-            return _sse(_normalize_chat_stream(result, manager.settings.model_id, tools, request.tool_choice))
-        return _normalize_chat_response(result, manager.settings.model_id, tools, request.tool_choice)
+        acquired = False
+        try:
+            if coordinator:
+                if request.stream:
+                    coordinator.acquire("llm")
+                    acquired = True
+                else:
+                    with coordinator.execute("llm"):
+                        return _chat_completion_with_backend(request, manager, messages, tools)
+            else:
+                return _chat_completion_with_backend(request, manager, messages, tools)
+            backend = _get_backend(manager)
+            result = backend.chat_completion(
+                messages=messages,
+                model=manager.settings.model_id,
+                tools=tools,
+                tool_choice=request.tool_choice,
+                temperature=request.temperature,
+                top_p=request.top_p,
+                max_tokens=request.requested_max_tokens,
+                stream=request.stream,
+                extra_params=_chat_sampling_params(request),
+            )
+            if request.stream:
+                chunks = _normalize_chat_stream(result, manager.settings.model_id, tools, request.tool_choice)
+                if coordinator:
+                    chunks = coordinator.wrap_stream("llm", chunks)
+                    acquired = False
+                return _sse(chunks)
+            return _normalize_chat_response(result, manager.settings.model_id, tools, request.tool_choice)
+        except ModelNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                f"The configured {exc.asset} is not downloaded. Call POST /v1/local/models/download and "
+                "POST /v1/local/models/load before inference, or set LAAS_AUTO_DOWNLOAD=true to allow "
+                "LAAS to download missing model assets during load.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="model_not_downloaded",
+            ) from exc
+        except Exception:
+            raise
+        finally:
+            if coordinator and acquired:
+                coordinator.release("llm")
 
     @router.post("/completions")
     def create_completion(request: CompletionRequest) -> Any:
         _assert_model(request.model, manager)
         prompt = request.prompt[0] if isinstance(request.prompt, list) else request.prompt
-        result = _get_backend(manager).completion(
-            prompt=prompt,
-            model=manager.settings.model_id,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            max_tokens=request.max_tokens,
-            stream=request.stream,
-            extra_params=_completion_sampling_params(request),
-        )
-        if request.stream:
-            return _sse(_normalize_completion_stream(result, manager.settings.model_id))
-        return _normalize_completion_response(result, manager.settings.model_id)
+        acquired = False
+        try:
+            if coordinator:
+                if request.stream:
+                    coordinator.acquire("llm")
+                    acquired = True
+                else:
+                    with coordinator.execute("llm"):
+                        return _completion_with_backend(request, manager, prompt)
+            else:
+                return _completion_with_backend(request, manager, prompt)
+            result = _get_backend(manager).completion(
+                prompt=prompt,
+                model=manager.settings.model_id,
+                temperature=request.temperature,
+                top_p=request.top_p,
+                max_tokens=request.max_tokens,
+                stream=request.stream,
+                extra_params=_completion_sampling_params(request),
+            )
+            if request.stream:
+                chunks = _normalize_completion_stream(result, manager.settings.model_id)
+                if coordinator:
+                    chunks = coordinator.wrap_stream("llm", chunks)
+                    acquired = False
+                return _sse(chunks)
+            return _normalize_completion_response(result, manager.settings.model_id)
+        except ModelNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                f"The configured {exc.asset} is not downloaded. Call POST /v1/local/models/download and "
+                "POST /v1/local/models/load before inference, or set LAAS_AUTO_DOWNLOAD=true to allow "
+                "LAAS to download missing model assets during load.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="model_not_downloaded",
+            ) from exc
+        except Exception:
+            raise
+        finally:
+            if coordinator and acquired:
+                coordinator.release("llm")
 
     @router.post("/responses")
     def create_response(request: ResponseRequest) -> Any:
@@ -226,33 +291,63 @@ def build_openai_router(manager: ModelManager, embedding_manager: EmbeddingManag
             [message.model_dump(exclude_none=True) for message in chat_request.messages],
             video_config=_video_config(manager.settings),
         )
-        result = _get_backend(manager).chat_completion(
-            messages=normalized_messages,
-            model=manager.settings.model_id,
-            tools=chat_request.tools,
-            tool_choice=chat_request.tool_choice,
-            temperature=chat_request.temperature,
-            top_p=chat_request.top_p,
-            max_tokens=chat_request.requested_max_tokens,
-            stream=request.stream,
-            extra_params=_chat_sampling_params(chat_request),
-        )
-        if request.stream:
-            chat_chunks = _normalize_chat_stream(
-                result,
-                manager.settings.model_id,
-                chat_request.tools,
-                chat_request.tool_choice,
+        acquired = False
+        try:
+            if coordinator:
+                if request.stream:
+                    coordinator.acquire("llm")
+                    acquired = True
+                else:
+                    with coordinator.execute("llm"):
+                        return _response_with_backend(request, chat_request, manager, normalized_messages, response_store)
+            else:
+                return _response_with_backend(request, chat_request, manager, normalized_messages, response_store)
+            result = _get_backend(manager).chat_completion(
+                messages=normalized_messages,
+                model=manager.settings.model_id,
+                tools=chat_request.tools,
+                tool_choice=chat_request.tool_choice,
+                temperature=chat_request.temperature,
+                top_p=chat_request.top_p,
+                max_tokens=chat_request.requested_max_tokens,
+                stream=request.stream,
+                extra_params=_chat_sampling_params(chat_request),
             )
-            return _sse(_responses_stream(chat_chunks, manager.settings.model_id))
-        chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools, chat_request.tool_choice)
-        response = _chat_to_response(chat_response, request, manager.settings.model_id)
-        if request.store:
-            response_store[response["id"]] = {
-                "response": response,
-                "input": _response_input_items_for_storage(request),
-            }
-        return response
+            if request.stream:
+                chat_chunks = _normalize_chat_stream(
+                    result,
+                    manager.settings.model_id,
+                    chat_request.tools,
+                    chat_request.tool_choice,
+                )
+                chunks = _responses_stream(chat_chunks, manager.settings.model_id)
+                if coordinator:
+                    chunks = coordinator.wrap_stream("llm", chunks)
+                    acquired = False
+                return _sse(chunks)
+            chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools, chat_request.tool_choice)
+            response = _chat_to_response(chat_response, request, manager.settings.model_id)
+            if request.store:
+                response_store[response["id"]] = {
+                    "response": response,
+                    "input": _response_input_items_for_storage(request),
+                }
+            return response
+        except ModelNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                f"The configured {exc.asset} is not downloaded. Call POST /v1/local/models/download and "
+                "POST /v1/local/models/load before inference, or set LAAS_AUTO_DOWNLOAD=true to allow "
+                "LAAS to download missing model assets during load.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="model_not_downloaded",
+            ) from exc
+        except Exception:
+            raise
+        finally:
+            if coordinator and acquired:
+                coordinator.release("llm")
 
     @router.get("/responses/{response_id}")
     def retrieve_response(response_id: str) -> dict[str, Any]:
@@ -360,6 +455,71 @@ def _unsupported_route(surface: str):
         )
 
     return route
+
+
+def _chat_completion_with_backend(
+    request: ChatCompletionRequest,
+    manager: ModelManager,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    result = _get_backend(manager).chat_completion(
+        messages=messages,
+        model=manager.settings.model_id,
+        tools=tools,
+        tool_choice=request.tool_choice,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_tokens=request.requested_max_tokens,
+        stream=False,
+        extra_params=_chat_sampling_params(request),
+    )
+    return _normalize_chat_response(result, manager.settings.model_id, tools, request.tool_choice)
+
+
+def _completion_with_backend(
+    request: CompletionRequest,
+    manager: ModelManager,
+    prompt: str,
+) -> dict[str, Any]:
+    result = _get_backend(manager).completion(
+        prompt=prompt,
+        model=manager.settings.model_id,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_tokens=request.max_tokens,
+        stream=False,
+        extra_params=_completion_sampling_params(request),
+    )
+    return _normalize_completion_response(result, manager.settings.model_id)
+
+
+def _response_with_backend(
+    request: ResponseRequest,
+    chat_request: ChatCompletionRequest,
+    manager: ModelManager,
+    normalized_messages: list[dict[str, Any]],
+    response_store: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    result = _get_backend(manager).chat_completion(
+        messages=normalized_messages,
+        model=manager.settings.model_id,
+        tools=chat_request.tools,
+        tool_choice=chat_request.tool_choice,
+        temperature=chat_request.temperature,
+        top_p=chat_request.top_p,
+        max_tokens=chat_request.requested_max_tokens,
+        stream=False,
+        extra_params=_chat_sampling_params(chat_request),
+    )
+    chat_response = _normalize_chat_response(result, manager.settings.model_id, chat_request.tools, chat_request.tool_choice)
+    response = _chat_to_response(chat_response, request, manager.settings.model_id)
+    if request.store:
+        response_store[response["id"]] = {
+            "response": response,
+            "input": _response_input_items_for_storage(request),
+        }
+    return response
 
 
 def _assert_model(requested_model: str | None, manager: ModelManager) -> None:

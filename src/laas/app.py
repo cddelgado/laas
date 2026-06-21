@@ -32,6 +32,7 @@ from .image import (
 )
 from .manager import ModelManager, ModelNotDownloadedError
 from .openai_compat import COMPATIBILITY_MATRIX, _normalize_chat_response, build_openai_router
+from .concurrency import ConcurrencyCoordinator
 from .schemas import (
     CreateVoiceSessionRequest,
     DownloadAudioRequest,
@@ -75,6 +76,11 @@ def create_app(
     active_embedding_manager = embedding_manager or EmbeddingManager(active_settings)
     active_image_manager = image_manager or ImageManager(active_settings)
     active_image_edit_manager = image_edit_manager or ImageEditManager(active_settings)
+
+    coordinator = ConcurrencyCoordinator()
+    coordinator.register_manager("llm", active_manager)
+    coordinator.register_manager("image", active_image_manager)
+    coordinator.register_manager("image_edit", active_image_edit_manager)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -129,6 +135,7 @@ def create_app(
     app.state.embedding_manager = active_embedding_manager
     app.state.image_manager = active_image_manager
     app.state.image_edit_manager = active_image_edit_manager
+    app.state.coordinator = coordinator
     app.state.voice_sessions = {}
 
     def image_response_item(
@@ -230,50 +237,63 @@ def create_app(
 
     @app.post("/v1/local/models/load")
     def load_model(request: LoadModelRequest) -> dict[str, Any]:
-        try:
-            return active_manager.load(
-                model_id=request.model_id,
-                hf_repo_id=request.hf_repo_id,
-                filename=request.filename,
-                download_if_missing=request.download_if_missing,
-            ).model_dump()
-        except ModelNotDownloadedError as exc:
-            raise openai_error(
-                409,
-                f"The configured {exc.asset} is not downloaded. Call POST /v1/local/models/download first, "
-                "or retry POST /v1/local/models/load with download_if_missing=true.",
-                type_="invalid_request_error",
-                param=exc.asset,
-                code="model_not_downloaded",
-            ) from exc
-        except RuntimeError as exc:
-            raise openai_error(503, str(exc), type_="server_error", code="backend_missing") from exc
+        with coordinator.maintenance("llm"):
+            try:
+                return active_manager.load(
+                    model_id=request.model_id,
+                    hf_repo_id=request.hf_repo_id,
+                    filename=request.filename,
+                    download_if_missing=request.download_if_missing,
+                ).model_dump()
+            except ModelNotDownloadedError as exc:
+                raise openai_error(
+                    409,
+                    f"The configured {exc.asset} is not downloaded. Call POST /v1/local/models/download first, "
+                    "or retry POST /v1/local/models/load with download_if_missing=true.",
+                    type_="invalid_request_error",
+                    param=exc.asset,
+                    code="model_not_downloaded",
+                ) from exc
+            except RuntimeError as exc:
+                raise openai_error(503, str(exc), type_="server_error", code="backend_missing") from exc
 
     @app.post("/v1/local/models/unload")
     def unload_model() -> dict[str, Any]:
-        return active_manager.unload().model_dump()
+        with coordinator.maintenance():
+            return active_manager.unload().model_dump()
+
+    def _unload_all_image_models_internal() -> dict[str, Any]:
+        generation = active_image_manager.unload().model_dump()
+        edit = active_image_edit_manager.unload().model_dump()
+        return {
+            "generation": generation,
+            "edit": edit,
+            "is_loaded": generation["is_loaded"] or edit["is_loaded"],
+        }
 
     @app.post("/v1/local/unload/all")
     def unload_all_local_models() -> dict[str, Any]:
-        text = active_manager.unload().model_dump()
-        audio = active_audio_manager.unload().model_dump()
-        transcription = active_transcription_manager.unload().model_dump()
-        embeddings = active_embedding_manager.unload().model_dump()
-        images = unload_all_image_models()
-        return {
-            "text": text,
-            "audio": audio,
-            "transcription": transcription,
-            "embeddings": embeddings,
-            "images": images,
-            "is_loaded": (
-                text["is_loaded"]
-                or audio["is_loaded"]
-                or transcription["is_loaded"]
-                or embeddings["is_loaded"]
-                or images["is_loaded"]
-            ),
-        }
+        with coordinator.maintenance():
+            text = active_manager.unload().model_dump()
+            audio = active_audio_manager.unload().model_dump()
+            transcription = active_transcription_manager.unload().model_dump()
+            embeddings = active_embedding_manager.unload().model_dump()
+            images = _unload_all_image_models_internal()
+            coordinator.clear_accelerator_cache()
+            return {
+                "text": text,
+                "audio": audio,
+                "transcription": transcription,
+                "embeddings": embeddings,
+                "images": images,
+                "is_loaded": (
+                    text["is_loaded"]
+                    or audio["is_loaded"]
+                    or transcription["is_loaded"]
+                    or embeddings["is_loaded"]
+                    or images["is_loaded"]
+                ),
+            }
 
     @app.get("/v1/local/embeddings/status")
     def embedding_status() -> dict[str, Any]:
@@ -338,38 +358,37 @@ def create_app(
 
     @app.post("/v1/local/images/load")
     def load_image_model(request: LoadImageRequest) -> dict[str, Any]:
-        try:
-            prepare_image_generation_slot()
-            return active_image_manager.load(
-                model_id=request.model_id,
-                hf_repo_id=request.hf_repo_id,
-                download_if_missing=request.download_if_missing,
-            ).model_dump()
-        except ImageNotDownloadedError as exc:
-            raise openai_error(
-                409,
-                "The configured image model is not downloaded. Call POST /v1/local/images/download first, "
-                "or retry POST /v1/local/images/load with download_if_missing=true.",
-                type_="invalid_request_error",
-                param=exc.asset,
-                code="image_model_not_downloaded",
-            ) from exc
-        except RuntimeError as exc:
-            raise openai_error(503, str(exc), type_="server_error", code="image_backend_missing") from exc
+        with coordinator.maintenance("image"):
+            try:
+                prepare_image_generation_slot()
+                return active_image_manager.load(
+                    model_id=request.model_id,
+                    hf_repo_id=request.hf_repo_id,
+                    download_if_missing=request.download_if_missing,
+                ).model_dump()
+            except ImageNotDownloadedError as exc:
+                raise openai_error(
+                    409,
+                    "The configured image model is not downloaded. Call POST /v1/local/images/download first, "
+                    "or retry POST /v1/local/images/load with download_if_missing=true.",
+                    type_="invalid_request_error",
+                    param=exc.asset,
+                    code="image_model_not_downloaded",
+                ) from exc
+            except RuntimeError as exc:
+                raise openai_error(503, str(exc), type_="server_error", code="image_backend_missing") from exc
 
     @app.post("/v1/local/images/unload")
     def unload_image_model() -> dict[str, Any]:
-        return active_image_manager.unload().model_dump()
+        with coordinator.maintenance():
+            return active_image_manager.unload().model_dump()
 
     @app.post("/v1/local/images/unload/all")
     def unload_all_image_models() -> dict[str, Any]:
-        generation = active_image_manager.unload().model_dump()
-        edit = active_image_edit_manager.unload().model_dump()
-        return {
-            "generation": generation,
-            "edit": edit,
-            "is_loaded": generation["is_loaded"] or edit["is_loaded"],
-        }
+        with coordinator.maintenance():
+            res = _unload_all_image_models_internal()
+            coordinator.clear_accelerator_cache()
+            return res
 
     @app.get("/v1/local/images/edit/status")
     def image_edit_status() -> dict[str, Any]:
@@ -388,28 +407,30 @@ def create_app(
 
     @app.post("/v1/local/images/edit/load")
     def load_image_edit_model(request: LoadImageRequest) -> dict[str, Any]:
-        try:
-            prepare_image_edit_slot()
-            return active_image_edit_manager.load(
-                model_id=request.model_id,
-                hf_repo_id=request.hf_repo_id,
-                download_if_missing=request.download_if_missing,
-            ).model_dump()
-        except ImageNotDownloadedError as exc:
-            raise openai_error(
-                409,
-                "The configured image edit model is not downloaded. Call POST /v1/local/images/edit/download first, "
-                "or retry POST /v1/local/images/edit/load with download_if_missing=true.",
-                type_="invalid_request_error",
-                param=exc.asset,
-                code="image_edit_model_not_downloaded",
-            ) from exc
-        except RuntimeError as exc:
-            raise openai_error(503, str(exc), type_="server_error", code="image_edit_backend_missing") from exc
+        with coordinator.maintenance("image_edit"):
+            try:
+                prepare_image_edit_slot()
+                return active_image_edit_manager.load(
+                    model_id=request.model_id,
+                    hf_repo_id=request.hf_repo_id,
+                    download_if_missing=request.download_if_missing,
+                ).model_dump()
+            except ImageNotDownloadedError as exc:
+                raise openai_error(
+                    409,
+                    "The configured image edit model is not downloaded. Call POST /v1/local/images/edit/download first, "
+                    "or retry POST /v1/local/images/edit/load with download_if_missing=true.",
+                    type_="invalid_request_error",
+                    param=exc.asset,
+                    code="image_edit_model_not_downloaded",
+                ) from exc
+            except RuntimeError as exc:
+                raise openai_error(503, str(exc), type_="server_error", code="image_edit_backend_missing") from exc
 
     @app.post("/v1/local/images/edit/unload")
     def unload_image_edit_model() -> dict[str, Any]:
-        return active_image_edit_manager.unload().model_dump()
+        with coordinator.maintenance():
+            return active_image_edit_manager.unload().model_dump()
 
     @app.get("/v1/local/files/images/{filename}")
     def get_local_image_file(filename: str) -> FileResponse:
@@ -879,46 +900,47 @@ def create_app(
                 code="model_not_found",
             )
         try:
-            prepare_image_generation_slot()
-            output_format = normalize_image_output_format(payload.output_format)
-            options = normalize_image_generation_options(
-                prompt=payload.prompt,
-                size=payload.size or active_settings.image_default_size,
-                default_steps=active_settings.image_num_inference_steps,
-                default_guidance_scale=active_settings.image_guidance_scale,
-                num_inference_steps=payload.num_inference_steps,
-                guidance_scale=payload.guidance_scale,
-                quality=payload.quality,
-                style=payload.style,
-                background=payload.background,
-                moderation=payload.moderation,
-            )
-            cleanup_image_outputs(
-                output_dir=active_settings.resolved_image_output_dir,
-                retention_seconds=active_settings.image_output_retention_seconds,
-            )
-            data = []
-            for index in range(payload.n):
-                seed = payload.seed + index if payload.seed is not None else None
-                image = active_image_manager.generate(
-                    prompt=options.prompt,
-                    negative_prompt=payload.negative_prompt,
-                    width=options.width,
-                    height=options.height,
-                    num_inference_steps=options.num_inference_steps,
-                    guidance_scale=options.guidance_scale,
-                    seed=seed,
+            with coordinator.execute("image"):
+                prepare_image_generation_slot()
+                output_format = normalize_image_output_format(payload.output_format)
+                options = normalize_image_generation_options(
+                    prompt=payload.prompt,
+                    size=payload.size or active_settings.image_default_size,
+                    default_steps=active_settings.image_num_inference_steps,
+                    default_guidance_scale=active_settings.image_guidance_scale,
+                    num_inference_steps=payload.num_inference_steps,
+                    guidance_scale=payload.guidance_scale,
+                    quality=payload.quality,
+                    style=payload.style,
+                    background=payload.background,
+                    moderation=payload.moderation,
                 )
-                data.append(
-                    image_response_item(
-                        request=request,
-                        image=image,
-                        response_format=response_format,
-                        output_format=output_format,
-                        output_compression=payload.output_compression,
-                        revised_prompt=options.prompt,
+                cleanup_image_outputs(
+                    output_dir=active_settings.resolved_image_output_dir,
+                    retention_seconds=active_settings.image_output_retention_seconds,
+                )
+                data = []
+                for index in range(payload.n):
+                    seed = payload.seed + index if payload.seed is not None else None
+                    image = active_image_manager.generate(
+                        prompt=options.prompt,
+                        negative_prompt=payload.negative_prompt,
+                        width=options.width,
+                        height=options.height,
+                        num_inference_steps=options.num_inference_steps,
+                        guidance_scale=options.guidance_scale,
+                        seed=seed,
                     )
-                )
+                    data.append(
+                        image_response_item(
+                            request=request,
+                            image=image,
+                            response_format=response_format,
+                            output_format=output_format,
+                            output_compression=payload.output_compression,
+                            revised_prompt=options.prompt,
+                        )
+                    )
         except ImageNotDownloadedError as exc:
             raise openai_error(
                 409,
@@ -974,50 +996,51 @@ def create_app(
                 code="model_not_found",
             )
         try:
-            prepare_image_generation_slot()
-            output_format = normalize_image_output_format(output_format)
-            options = normalize_image_variation_options(
-                size=size,
-                default_size=active_settings.image_variation_default_size,
-                default_prompt=active_settings.image_variation_prompt,
-                default_steps=active_settings.image_variation_num_inference_steps,
-                default_guidance_scale=active_settings.image_variation_guidance_scale,
-                default_strength=active_settings.image_variation_strength,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                strength=strength,
-            )
-            source_image = prepare_variation_input(
-                image_bytes=image.file.read(),
-                width=options.width,
-                height=options.height,
-            )
-            cleanup_image_outputs(
-                output_dir=active_settings.resolved_image_output_dir,
-                retention_seconds=active_settings.image_output_retention_seconds,
-            )
-            data = []
-            for index in range(n):
-                request_seed = seed + index if seed is not None else None
-                varied = active_image_manager.variation(
-                    prompt=options.prompt,
-                    image=source_image,
+            with coordinator.execute("image"):
+                prepare_image_generation_slot()
+                output_format = normalize_image_output_format(output_format)
+                options = normalize_image_variation_options(
+                    size=size,
+                    default_size=active_settings.image_variation_default_size,
+                    default_prompt=active_settings.image_variation_prompt,
+                    default_steps=active_settings.image_variation_num_inference_steps,
+                    default_guidance_scale=active_settings.image_variation_guidance_scale,
+                    default_strength=active_settings.image_variation_strength,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    strength=strength,
+                )
+                source_image = prepare_variation_input(
+                    image_bytes=image.file.read(),
                     width=options.width,
                     height=options.height,
-                    num_inference_steps=options.num_inference_steps,
-                    guidance_scale=options.guidance_scale,
-                    strength=options.strength,
-                    seed=request_seed,
                 )
-                data.append(
-                    image_response_item(
-                        request=request,
-                        image=varied,
-                        response_format=response_format,
-                        output_format=output_format,
-                        output_compression=output_compression,
+                cleanup_image_outputs(
+                    output_dir=active_settings.resolved_image_output_dir,
+                    retention_seconds=active_settings.image_output_retention_seconds,
+                )
+                data = []
+                for index in range(n):
+                    request_seed = seed + index if seed is not None else None
+                    varied = active_image_manager.variation(
+                        prompt=options.prompt,
+                        image=source_image,
+                        width=options.width,
+                        height=options.height,
+                        num_inference_steps=options.num_inference_steps,
+                        guidance_scale=options.guidance_scale,
+                        strength=options.strength,
+                        seed=request_seed,
                     )
-                )
+                    data.append(
+                        image_response_item(
+                            request=request,
+                            image=varied,
+                            response_format=response_format,
+                            output_format=output_format,
+                            output_compression=output_compression,
+                        )
+                    )
         except ImageNotDownloadedError as exc:
             raise openai_error(
                 409,
@@ -1080,59 +1103,60 @@ def create_app(
                 code="model_not_found",
             )
         try:
-            prepare_image_edit_slot()
-            resolved_output_format = normalize_image_output_format(output_format)
-            options = normalize_image_edit_options(
-                prompt=prompt,
-                size=size if size and size != "auto" else active_settings.image_edit_default_size,
-                default_steps=active_settings.image_edit_num_inference_steps,
-                default_guidance_scale=active_settings.image_edit_guidance_scale,
-                default_strength=active_settings.image_edit_strength,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                strength=strength,
-                quality=quality,
-                background=background,
-                input_fidelity=input_fidelity,
-                moderation=moderation,
-            )
-            image_bytes = image.file.read()
-            mask_bytes = mask.file.read() if mask is not None else None
-            base_image, mask_image = prepare_inpaint_inputs(
-                image_bytes=image_bytes,
-                mask_bytes=mask_bytes,
-                width=options.width,
-                height=options.height,
-            )
-            cleanup_image_outputs(
-                output_dir=active_settings.resolved_image_output_dir,
-                retention_seconds=active_settings.image_output_retention_seconds,
-            )
-            data = []
-            for index in range(n):
-                request_seed = seed + index if seed is not None else None
-                edited = active_image_edit_manager.edit(
-                    prompt=options.prompt,
-                    negative_prompt=negative_prompt,
-                    image=base_image,
-                    mask_image=mask_image,
+            with coordinator.execute("image_edit"):
+                prepare_image_edit_slot()
+                resolved_output_format = normalize_image_output_format(output_format)
+                options = normalize_image_edit_options(
+                    prompt=prompt,
+                    size=size if size and size != "auto" else active_settings.image_edit_default_size,
+                    default_steps=active_settings.image_edit_num_inference_steps,
+                    default_guidance_scale=active_settings.image_edit_guidance_scale,
+                    default_strength=active_settings.image_edit_strength,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    strength=strength,
+                    quality=quality,
+                    background=background,
+                    input_fidelity=input_fidelity,
+                    moderation=moderation,
+                )
+                image_bytes = image.file.read()
+                mask_bytes = mask.file.read() if mask is not None else None
+                base_image, mask_image = prepare_inpaint_inputs(
+                    image_bytes=image_bytes,
+                    mask_bytes=mask_bytes,
                     width=options.width,
                     height=options.height,
-                    num_inference_steps=options.num_inference_steps,
-                    guidance_scale=options.guidance_scale,
-                    strength=options.strength,
-                    seed=request_seed,
                 )
-                data.append(
-                    image_response_item(
-                        request=request,
-                        image=edited,
-                        response_format=response_format,
-                        output_format=resolved_output_format,
-                        output_compression=output_compression,
-                        revised_prompt=options.prompt,
+                cleanup_image_outputs(
+                    output_dir=active_settings.resolved_image_output_dir,
+                    retention_seconds=active_settings.image_output_retention_seconds,
+                )
+                data = []
+                for index in range(n):
+                    request_seed = seed + index if seed is not None else None
+                    edited = active_image_edit_manager.edit(
+                        prompt=options.prompt,
+                        negative_prompt=negative_prompt,
+                        image=base_image,
+                        mask_image=mask_image,
+                        width=options.width,
+                        height=options.height,
+                        num_inference_steps=options.num_inference_steps,
+                        guidance_scale=options.guidance_scale,
+                        strength=options.strength,
+                        seed=request_seed,
                     )
-                )
+                    data.append(
+                        image_response_item(
+                            request=request,
+                            image=edited,
+                            response_format=response_format,
+                            output_format=resolved_output_format,
+                            output_compression=output_compression,
+                            revised_prompt=options.prompt,
+                        )
+                    )
         except ImageNotDownloadedError as exc:
             raise openai_error(
                 409,
@@ -1321,7 +1345,8 @@ def create_app(
             return PlainTextResponse(str(payload), media_type="text/vtt")
         return payload
 
-    app.include_router(build_openai_router(active_manager, active_embedding_manager))
+    app.state.coordinator = coordinator
+    app.include_router(build_openai_router(active_manager, active_embedding_manager, coordinator))
     return app
 
 

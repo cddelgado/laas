@@ -564,6 +564,16 @@ exclusive loading.
 Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
 and both image pipelines in one request.
 
+## VRAM Concurrency Coordination
+
+LAAS includes a thread-safe VRAM Concurrency Coordinator to serialize heavy GPU-bound resources (LLM completions, SDXL Turbo image generation, and SD 1.5 inpainting). It automatically:
+- Serializes concurrent GPU-bound requests to prevent CUDA Out-of-Memory (OOM) errors and KV cache corruption.
+- Safely unloads conflicting heavy models and clears PyTorch CUDA memory cache on swaps.
+- Stream-wraps completions to hold the serialization lock until the client finishes reading.
+- Bypasses lightweight CPU-bound endpoints (Kokoro TTS, Whisper STT) to keep them concurrently accessible.
+
+For detailed design and configuration, see [docs/CONCURRENCY.md](docs/CONCURRENCY.md).
+
 ## Local Voice Stack
 
 Install the voice extra, start `laas`, then download and load Kokoro plus
