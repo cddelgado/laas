@@ -15,6 +15,19 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `DELETE /v1/responses/{response_id}`
 - `GET /v1/responses/{response_id}/input_items`
 - `POST /v1/embeddings`
+- `POST /v1/files`
+- `GET /v1/files`
+- `GET /v1/files/{file_id}`
+- `GET /v1/files/{file_id}/content`
+- `DELETE /v1/files/{file_id}`
+- `POST /v1/vector_stores`
+- `GET /v1/vector_stores`
+- `GET /v1/vector_stores/{vector_store_id}`
+- `DELETE /v1/vector_stores/{vector_store_id}`
+- `POST /v1/vector_stores/{vector_store_id}/files`
+- `GET /v1/vector_stores/{vector_store_id}/files`
+- `GET /v1/vector_stores/{vector_store_id}/files/{file_id}`
+- `DELETE /v1/vector_stores/{vector_store_id}/files/{file_id}`
 - `POST /v1/images/generations`
 - `POST /v1/images/variations`
 - `POST /v1/images/edits`
@@ -48,6 +61,8 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/embeddings/download`
 - `POST /v1/local/embeddings/load`
 - `POST /v1/local/embeddings/unload`
+- `GET /v1/local/files/status`
+- `POST /v1/local/vector_stores/{vector_store_id}/search`
 - `GET /v1/local/voice/status`
 - `POST /v1/local/voice/download`
 - `POST /v1/local/voice/load`
@@ -816,6 +831,36 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/embeddings/status
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/download -Body "{}" -ContentType "application/json"
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/load -Body "{}" -ContentType "application/json"
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/embeddings/unload
+```
+
+Files and vector stores are local. On Windows, uploaded file bytes and SQLite
+metadata default to `D:\AI\FileStorage`; on macOS/Linux they default to
+`~/AI/FileStorage`. Override with `LAAS_FILE_STORAGE_DIR`.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
+
+uploaded = client.files.create(
+    file=open("notes.md", "rb"),
+    purpose="assistants",
+)
+store = client.vector_stores.create(name="local-docs")
+client.vector_stores.files.create(
+    vector_store_id=store.id,
+    file_id=uploaded.id,
+)
+```
+
+OpenAI's hosted File Search API does not define a direct local search route, so
+LAAS adds one:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8000/v1/local/vector_stores/vs_your_store_id/search `
+  -ContentType "application/json" `
+  -Body '{"query":"how do I configure Vulkan?","limit":8}'
 ```
 
 ## Compatibility Testing

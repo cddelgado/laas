@@ -361,6 +361,10 @@ class SettingsPatch(BaseModel):
     host: str | None = None
     port: int | None = None
     model_dir: str | None = None
+    file_storage_dir: str | None = None
+    file_storage_database: str | None = None
+    vector_store_chunk_tokens: int | None = Field(default=None, gt=0)
+    vector_store_chunk_overlap_tokens: int | None = Field(default=None, ge=0)
     model_id: str | None = None
     hf_repo_id: str | None = None
     hf_filename: str | None = None

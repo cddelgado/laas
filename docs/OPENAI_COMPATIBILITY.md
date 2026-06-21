@@ -5,9 +5,9 @@ that can run against local model files and returns explicit unsupported errors
 for selected cloud/account APIs.
 
 Reference scope: OpenAI's API reference groups current APIs into inference
-surfaces such as Responses, Chat Completions, Images, Audio, Embeddings, and
-Models, plus hosted/cloud surfaces such as Files, Uploads, Batches,
-Fine-tuning, Vector Stores, Realtime, Containers, Skills, and Administration.
+surfaces such as Responses, Chat Completions, Images, Audio, Embeddings, Files,
+Vector Stores, and Models, plus hosted/cloud surfaces such as Uploads, Batches,
+Fine-tuning, Realtime, Containers, Skills, and Administration.
 
 ## Supported
 
@@ -18,6 +18,8 @@ Fine-tuning, Vector Stores, Realtime, Containers, Skills, and Administration.
 | Completions | `POST /v1/completions` | Legacy text completion compatibility over the local llama.cpp backend. |
 | Responses | `POST /v1/responses`, `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items` | Local in-memory response storage with text and function-call output normalization. |
 | Embeddings | `POST /v1/embeddings` | Local Sentence Transformers backend, defaulting to `bge-small-en-v1.5`. |
+| Files | `POST /v1/files`, `GET /v1/files`, `GET /v1/files/{id}`, `GET /v1/files/{id}/content`, `DELETE /v1/files/{id}` | Local file bytes on disk with SQLite metadata. |
+| Vector Stores | `POST /v1/vector_stores`, `GET /v1/vector_stores`, `GET /v1/vector_stores/{id}`, `DELETE /v1/vector_stores/{id}`, `POST/GET /v1/vector_stores/{id}/files`, `GET/DELETE /v1/vector_stores/{id}/files/{file_id}`, `POST /v1/local/vector_stores/{id}/search` | Local file indexing and cosine search over embedding chunks. |
 | Images | `POST /v1/images/generations`, `POST /v1/images/variations`, `POST /v1/images/edits` | Local Diffusers generation, variation, and inpainting/edit compatibility. |
 | Audio | `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` | Local Kokoro TTS and whisper.cpp-compatible STT. |
 
@@ -48,11 +50,9 @@ These routes return OpenAI-shaped `501` errors with
 
 | Surface | Registered routes |
 | --- | --- |
-| Files | `GET/POST /v1/files`, `GET/DELETE /v1/files/{file_id}`, `GET /v1/files/{file_id}/content` |
 | Uploads | `POST /v1/uploads`, `GET/POST/DELETE /v1/uploads/{upload_id}` |
 | Batches | `GET/POST /v1/batches`, `GET /v1/batches/{batch_id}`, `POST /v1/batches/{batch_id}/cancel` |
 | Fine-tuning | `GET/POST /v1/fine_tuning/jobs`, `GET /v1/fine_tuning/jobs/{job_id}`, `POST /v1/fine_tuning/jobs/{job_id}/cancel` |
-| Vector Stores | `GET/POST /v1/vector_stores`, `GET/POST/DELETE /v1/vector_stores/{vector_store_id}`, `GET/POST /v1/vector_stores/{vector_store_id}/files` |
 | Moderations | `POST /v1/moderations` |
 
 ## Not Applicable

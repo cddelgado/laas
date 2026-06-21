@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Any, Iterable
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body, File, Form, Query, Response, UploadFile
 from fastapi.responses import StreamingResponse
 
 from .embedding import EmbeddingManager, EmbeddingNotDownloadedError, encode_embedding, estimate_tokens
@@ -14,6 +14,7 @@ from .manager import ModelManager, ModelNotDownloadedError
 from .multimodal import VideoExtractionConfig, normalize_chat_messages, normalize_content_parts
 from .schemas import ChatCompletionRequest, CompletionRequest, EmbeddingRequest, ModelList, OpenAIModel, ResponseRequest
 from .settings import Settings
+from .storage import LocalFileNotFoundError, LocalStorage, VectorStoreFileNotFoundError, VectorStoreNotFoundError
 from .tools import normalize_tools_for_responses, parse_tool_calls, remove_tool_call_markup, validate_tool_choice
 from .concurrency import ConcurrencyCoordinator
 
@@ -67,14 +68,40 @@ COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
         "notes": "Local Kokoro TTS and whisper.cpp-compatible transcription/translation stack.",
     },
     {
-        "surface": "Files, Uploads, Batches, Fine-tuning, Vector Stores, Moderations",
+        "surface": "Files",
+        "status": "supported",
+        "endpoints": [
+            "POST /v1/files",
+            "GET /v1/files",
+            "GET /v1/files/{file_id}",
+            "GET /v1/files/{file_id}/content",
+            "DELETE /v1/files/{file_id}",
+        ],
+        "notes": "Local on-disk file storage with SQLite metadata.",
+    },
+    {
+        "surface": "Vector Stores",
+        "status": "supported",
+        "endpoints": [
+            "POST /v1/vector_stores",
+            "GET /v1/vector_stores",
+            "GET /v1/vector_stores/{vector_store_id}",
+            "DELETE /v1/vector_stores/{vector_store_id}",
+            "POST /v1/vector_stores/{vector_store_id}/files",
+            "GET /v1/vector_stores/{vector_store_id}/files",
+            "GET /v1/vector_stores/{vector_store_id}/files/{file_id}",
+            "DELETE /v1/vector_stores/{vector_store_id}/files/{file_id}",
+            "POST /v1/local/vector_stores/{vector_store_id}/search",
+        ],
+        "notes": "Local SQLite metadata and chunk store with embedding-backed cosine search.",
+    },
+    {
+        "surface": "Uploads, Batches, Fine-tuning, Moderations",
         "status": "unsupported",
         "endpoints": [
-            "/v1/files",
             "/v1/uploads",
             "/v1/batches",
             "/v1/fine_tuning/jobs",
-            "/v1/vector_stores",
             "/v1/moderations",
         ],
         "notes": "These cloud/account or hosted-storage APIs are not implemented by the local inference host.",
@@ -92,9 +119,11 @@ def build_openai_router(
     manager: ModelManager,
     embedding_manager: EmbeddingManager,
     coordinator: ConcurrencyCoordinator | None = None,
+    storage: LocalStorage | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/v1")
     response_store: dict[str, dict[str, Any]] = {}
+    active_storage = storage or LocalStorage(manager.settings, embedding_manager)
 
     @router.get("/models", response_model=ModelList)
     def list_models() -> ModelList:
@@ -413,15 +442,173 @@ def build_openai_router(
             "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
         }
 
+    @router.get("/local/files/status")
+    def local_files_status() -> dict[str, Any]:
+        return active_storage.status()
+
+    @router.post("/files")
+    async def create_file(
+        file: UploadFile = File(...),
+        purpose: str = Form("assistants"),
+    ) -> dict[str, Any]:
+        try:
+            return active_storage.create_file(
+                filename=file.filename or "upload.bin",
+                content=await file.read(),
+                purpose=purpose,
+                mime_type=file.content_type,
+            )
+        except ValueError as exc:
+            raise openai_error(400, str(exc), param="file") from exc
+
+    @router.get("/files")
+    def list_files(purpose: str | None = Query(None)) -> dict[str, Any]:
+        return {"object": "list", "data": active_storage.list_files(purpose=purpose)}
+
+    @router.get("/files/{file_id}")
+    def retrieve_file(file_id: str) -> dict[str, Any]:
+        try:
+            return active_storage.get_file(file_id)
+        except LocalFileNotFoundError as exc:
+            raise openai_error(404, f"The file '{file_id}' does not exist", code="file_not_found") from exc
+
+    @router.delete("/files/{file_id}")
+    def delete_file(file_id: str) -> dict[str, Any]:
+        try:
+            return active_storage.delete_file(file_id)
+        except LocalFileNotFoundError as exc:
+            raise openai_error(404, f"The file '{file_id}' does not exist", code="file_not_found") from exc
+
+    @router.get("/files/{file_id}/content")
+    def retrieve_file_content(file_id: str) -> Response:
+        try:
+            metadata = active_storage.get_file(file_id)
+            path = active_storage.file_path(file_id)
+        except LocalFileNotFoundError as exc:
+            raise openai_error(404, f"The file '{file_id}' does not exist", code="file_not_found") from exc
+        return Response(
+            content=path.read_bytes(),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{metadata["filename"]}"'},
+        )
+
+    @router.post("/vector_stores")
+    def create_vector_store(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        return active_storage.create_vector_store(name=payload.get("name"), metadata=metadata)
+
+    @router.get("/vector_stores")
+    def list_vector_stores() -> dict[str, Any]:
+        return {"object": "list", "data": active_storage.list_vector_stores(), "has_more": False}
+
+    @router.get("/vector_stores/{vector_store_id}")
+    def retrieve_vector_store(vector_store_id: str) -> dict[str, Any]:
+        try:
+            return active_storage.get_vector_store(vector_store_id)
+        except VectorStoreNotFoundError as exc:
+            raise openai_error(
+                404,
+                f"The vector store '{vector_store_id}' does not exist",
+                code="vector_store_not_found",
+            ) from exc
+
+    @router.delete("/vector_stores/{vector_store_id}")
+    def delete_vector_store(vector_store_id: str) -> dict[str, Any]:
+        try:
+            return active_storage.delete_vector_store(vector_store_id)
+        except VectorStoreNotFoundError as exc:
+            raise openai_error(
+                404,
+                f"The vector store '{vector_store_id}' does not exist",
+                code="vector_store_not_found",
+            ) from exc
+
+    @router.post("/vector_stores/{vector_store_id}/files")
+    def create_vector_store_file(vector_store_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        file_id = payload.get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            raise openai_error(400, "file_id is required", param="file_id")
+        try:
+            return active_storage.attach_file(vector_store_id=vector_store_id, file_id=file_id)
+        except LocalFileNotFoundError as exc:
+            raise openai_error(404, f"The file '{file_id}' does not exist", param="file_id", code="file_not_found") from exc
+        except VectorStoreNotFoundError as exc:
+            raise openai_error(
+                404,
+                f"The vector store '{vector_store_id}' does not exist",
+                code="vector_store_not_found",
+            ) from exc
+        except EmbeddingNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured embedding model is not downloaded. Call POST /v1/local/embeddings/download first.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="embedding_model_not_downloaded",
+            ) from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="file") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="embedding_backend_missing") from exc
+
+    @router.get("/vector_stores/{vector_store_id}/files")
+    def list_vector_store_files(vector_store_id: str) -> dict[str, Any]:
+        try:
+            return {"object": "list", "data": active_storage.list_vector_store_files(vector_store_id), "has_more": False}
+        except VectorStoreNotFoundError as exc:
+            raise openai_error(
+                404,
+                f"The vector store '{vector_store_id}' does not exist",
+                code="vector_store_not_found",
+            ) from exc
+
+    @router.get("/vector_stores/{vector_store_id}/files/{file_id}")
+    def retrieve_vector_store_file(vector_store_id: str, file_id: str) -> dict[str, Any]:
+        try:
+            return active_storage.get_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
+        except VectorStoreFileNotFoundError as exc:
+            raise openai_error(404, f"The vector store file '{file_id}' does not exist", code="not_found") from exc
+
+    @router.delete("/vector_stores/{vector_store_id}/files/{file_id}")
+    def delete_vector_store_file(vector_store_id: str, file_id: str) -> dict[str, Any]:
+        try:
+            return active_storage.delete_vector_store_file(vector_store_id=vector_store_id, file_id=file_id)
+        except VectorStoreFileNotFoundError as exc:
+            raise openai_error(404, f"The vector store file '{file_id}' does not exist", code="not_found") from exc
+
+    @router.post("/local/vector_stores/{vector_store_id}/search")
+    def search_vector_store(vector_store_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        query = payload.get("query")
+        if not isinstance(query, str):
+            raise openai_error(400, "query is required", param="query")
+        limit = int(payload.get("limit") or 8)
+        try:
+            return active_storage.search_vector_store(vector_store_id=vector_store_id, query=query, limit=limit)
+        except VectorStoreNotFoundError as exc:
+            raise openai_error(
+                404,
+                f"The vector store '{vector_store_id}' does not exist",
+                code="vector_store_not_found",
+            ) from exc
+        except EmbeddingNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured embedding model is not downloaded. Call POST /v1/local/embeddings/download first.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="embedding_model_not_downloaded",
+            ) from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="query") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="embedding_backend_missing") from exc
+
     register_unsupported_routes(router)
     return router
 
 
 def register_unsupported_routes(router: APIRouter) -> None:
     unsupported_routes = [
-        ("/files", ["GET", "POST"], "Files"),
-        ("/files/{file_id}", ["GET", "DELETE"], "Files"),
-        ("/files/{file_id}/content", ["GET"], "Files"),
         ("/uploads", ["POST"], "Uploads"),
         ("/uploads/{upload_id}", ["GET", "POST", "DELETE"], "Uploads"),
         ("/batches", ["GET", "POST"], "Batches"),
@@ -430,9 +617,6 @@ def register_unsupported_routes(router: APIRouter) -> None:
         ("/fine_tuning/jobs", ["GET", "POST"], "Fine-tuning"),
         ("/fine_tuning/jobs/{job_id}", ["GET"], "Fine-tuning"),
         ("/fine_tuning/jobs/{job_id}/cancel", ["POST"], "Fine-tuning"),
-        ("/vector_stores", ["GET", "POST"], "Vector Stores"),
-        ("/vector_stores/{vector_store_id}", ["GET", "POST", "DELETE"], "Vector Stores"),
-        ("/vector_stores/{vector_store_id}/files", ["GET", "POST"], "Vector Stores"),
         ("/moderations", ["POST"], "Moderations"),
     ]
     for path, methods, surface in unsupported_routes:

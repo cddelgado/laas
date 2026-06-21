@@ -759,6 +759,58 @@ curl -X POST http://127.0.0.1:8000/v1/local/embeddings/load \
   -d "{}"
 ```
 
+Files and vector stores use local storage, not hosted OpenAI storage. On
+Windows the default is `D:\AI\FileStorage`; on macOS/Linux the default is
+`~/AI/FileStorage`. The SQLite metadata file defaults to
+`LAAS_FILE_STORAGE_DIR\laas.sqlite3`.
+
+Relevant settings:
+
+```powershell
+$env:LAAS_FILE_STORAGE_DIR = "D:\AI\FileStorage"
+$env:LAAS_FILE_STORAGE_DATABASE = "laas.sqlite3"
+$env:LAAS_VECTOR_STORE_CHUNK_TOKENS = "220"
+$env:LAAS_VECTOR_STORE_CHUNK_OVERLAP_TOKENS = "40"
+```
+
+Upload a file, attach it to a vector store, and search it:
+
+```python
+import requests
+
+base_url = "http://127.0.0.1:8000/v1"
+
+with open("notes.md", "rb") as fh:
+    uploaded = requests.post(
+        f"{base_url}/files",
+        data={"purpose": "assistants"},
+        files={"file": ("notes.md", fh, "text/markdown")},
+    )
+uploaded.raise_for_status()
+file_id = uploaded.json()["id"]
+
+store = requests.post(f"{base_url}/vector_stores", json={"name": "local-docs"})
+store.raise_for_status()
+store_id = store.json()["id"]
+
+attached = requests.post(
+    f"{base_url}/vector_stores/{store_id}/files",
+    json={"file_id": file_id},
+)
+attached.raise_for_status()
+
+results = requests.post(
+    f"{base_url}/local/vector_stores/{store_id}/search",
+    json={"query": "how do I configure Vulkan?", "limit": 8},
+)
+results.raise_for_status()
+print(results.json()["data"])
+```
+
+The first attach indexes the file synchronously with the configured embeddings
+backend. If the embedding model is missing, either load/download it first or
+leave `LAAS_EMBEDDING_AUTO_DOWNLOAD=true` so LAAS can fetch it on first use.
+
 Gemma 4 multimodal requests require a projector. The default Q4 main model uses
 `mmproj-gemma-4-E4B-it-Q8_0.gguf` because the repo currently publishes Q8 and
 bf16 projectors, not a Q4 projector. Set `LAAS_MMPROJ_REQUIRED=false` only for

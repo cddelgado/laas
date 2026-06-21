@@ -59,6 +59,7 @@ def make_embedding_manager(settings: Settings, *, write_model: bool = True) -> E
 def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         auto_download=auto_download,
@@ -85,6 +86,7 @@ def make_client_with_backend(
 ) -> TestClient:
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         llm_audio_input_enabled=llm_audio_input_enabled,
@@ -106,6 +108,7 @@ def make_embedding_client(
 ) -> TestClient:
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         embedding_idle_unload_seconds=0,
@@ -274,6 +277,7 @@ def test_diffusers_image_edit_backend_passes_padding_crop(tmp_path: Path) -> Non
 
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         image_edit_padding_mask_crop=24,
         image_edit_composite_blur_radius=0,
@@ -310,6 +314,7 @@ def make_audio_client(
 ) -> tuple[TestClient, FakeAudioBackend]:
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         tts_idle_unload_seconds=0,
@@ -341,6 +346,7 @@ def make_image_client(
 ) -> tuple[TestClient, FakeImageBackend]:
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         image_idle_unload_seconds=0,
@@ -370,6 +376,7 @@ def make_image_edit_client(
 ) -> tuple[TestClient, FakeImageEditBackend]:
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         image_edit_idle_unload_seconds=0,
@@ -402,6 +409,7 @@ def make_voice_client(
 ) -> tuple[TestClient, FakeAudioBackend, FakeTranscriptionBackend]:
     settings = Settings(
         model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
         settings_file=tmp_path / "settings.json",
         idle_unload_seconds=0,
         tts_idle_unload_seconds=0,
@@ -727,15 +735,100 @@ def test_compatibility_matrix_and_unsupported_openai_endpoints(tmp_path: Path) -
     payload = matrix.json()
     assert payload["object"] == "local.compatibility_matrix"
     assert any(item["surface"] == "Embeddings" and item["status"] == "supported" for item in payload["data"])
-    assert any(item["surface"].startswith("Files") and item["status"] == "unsupported" for item in payload["data"])
+    assert any(item["surface"] == "Files" and item["status"] == "supported" for item in payload["data"])
+    assert any(item["surface"] == "Vector Stores" and item["status"] == "supported" for item in payload["data"])
 
     files = client.get("/v1/files")
-    assert files.status_code == 501
-    assert files.json()["detail"]["error"]["code"] == "unsupported_endpoint"
+    assert files.status_code == 200
+    assert files.json()["data"] == []
 
     batch = client.post("/v1/batches", json={})
     assert batch.status_code == 501
     assert batch.json()["detail"]["error"]["param"] == "endpoint"
+
+
+def test_files_api_persists_lists_serves_and_deletes(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    status = client.get("/v1/local/files/status").json()
+    assert status["root"] == str(tmp_path / "file-storage")
+
+    created = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={"file": ("notes.txt", b"alpha beta gamma", "text/plain")},
+    )
+    assert created.status_code == 200
+    file_payload = created.json()
+    assert file_payload["object"] == "file"
+    assert file_payload["filename"] == "notes.txt"
+    assert file_payload["bytes"] == len(b"alpha beta gamma")
+
+    listed = client.get("/v1/files").json()
+    assert listed["object"] == "list"
+    assert listed["data"][0]["id"] == file_payload["id"]
+
+    retrieved = client.get(f"/v1/files/{file_payload['id']}").json()
+    assert retrieved["filename"] == "notes.txt"
+
+    content = client.get(f"/v1/files/{file_payload['id']}/content")
+    assert content.status_code == 200
+    assert content.content == b"alpha beta gamma"
+
+    deleted = client.delete(f"/v1/files/{file_payload['id']}").json()
+    assert deleted == {"id": file_payload["id"], "object": "file.deleted", "deleted": True}
+    missing = client.get(f"/v1/files/{file_payload['id']}")
+    assert missing.status_code == 404
+
+
+def test_vector_stores_attach_index_search_and_delete(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+
+    file_response = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={
+            "file": (
+                "manual.md",
+                b"Vulkan setup uses a GPU runtime. Banana bread belongs in a kitchen.",
+                "text/markdown",
+            )
+        },
+    ).json()
+    store = client.post("/v1/vector_stores", json={"name": "docs", "metadata": {"suite": "test"}}).json()
+    assert store["object"] == "vector_store"
+    assert store["name"] == "docs"
+
+    attached = client.post(
+        f"/v1/vector_stores/{store['id']}/files",
+        json={"file_id": file_response["id"]},
+    )
+    assert attached.status_code == 200
+    assert attached.json()["status"] == "completed"
+
+    files = client.get(f"/v1/vector_stores/{store['id']}/files").json()
+    assert files["data"][0]["id"] == file_response["id"]
+
+    refreshed = client.get(f"/v1/vector_stores/{store['id']}").json()
+    assert refreshed["file_counts"]["completed"] == 1
+    assert refreshed["metadata"] == {"suite": "test"}
+
+    search = client.post(
+        f"/v1/local/vector_stores/{store['id']}/search",
+        json={"query": "Vulkan GPU setup", "limit": 2},
+    )
+    assert search.status_code == 200
+    result = search.json()["data"][0]
+    assert result["file_id"] == file_response["id"]
+    assert "Vulkan setup" in result["text"]
+    assert isinstance(result["score"], float)
+
+    detached = client.delete(f"/v1/vector_stores/{store['id']}/files/{file_response['id']}").json()
+    assert detached["deleted"] is True
+    assert client.get(f"/v1/vector_stores/{store['id']}").json()["file_counts"]["total"] == 0
+
+    deleted = client.delete(f"/v1/vector_stores/{store['id']}").json()
+    assert deleted == {"id": store["id"], "object": "vector_store.deleted", "deleted": True}
 
 
 def test_load_chat_completion_and_unload(tmp_path: Path) -> None:

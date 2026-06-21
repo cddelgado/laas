@@ -18,6 +18,12 @@ def default_model_dir() -> Path:
     return Path.home() / "AI" / "Models"
 
 
+def default_file_storage_dir() -> Path:
+    if sys.platform.startswith("win"):
+        return Path(r"D:\AI\FileStorage")
+    return Path.home() / "AI" / "FileStorage"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="LAAS_",
@@ -29,6 +35,10 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
     model_dir: Path = Field(default_factory=default_model_dir)
+    file_storage_dir: Path = Field(default_factory=default_file_storage_dir)
+    file_storage_database: str = "laas.sqlite3"
+    vector_store_chunk_tokens: int = 220
+    vector_store_chunk_overlap_tokens: int = 40
     model_id: str = "gemma-4-e4b-it-q4_k_m"
     hf_repo_id: str = "ggml-org/gemma-4-E4B-it-GGUF"
     hf_filename: str = "gemma-4-E4B-it-Q4_K_M.gguf"
@@ -155,11 +165,19 @@ class Settings(BaseSettings):
     def resolved_image_output_dir(self) -> Path:
         return self.image_output_dir or (self.model_dir / "outputs" / "images")
 
+    @property
+    def file_storage_db_path(self) -> Path:
+        return self.file_storage_dir / self.file_storage_database
+
     def public_dict(self) -> dict[str, Any]:
         return {
             "host": self.host,
             "port": self.port,
             "model_dir": str(self.model_dir),
+            "file_storage_dir": str(self.file_storage_dir),
+            "file_storage_database": self.file_storage_database,
+            "vector_store_chunk_tokens": self.vector_store_chunk_tokens,
+            "vector_store_chunk_overlap_tokens": self.vector_store_chunk_overlap_tokens,
             "model_id": self.model_id,
             "hf_repo_id": self.hf_repo_id,
             "hf_filename": self.hf_filename,
