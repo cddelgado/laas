@@ -1,0 +1,35 @@
+{
+  "name": "responses.function_call",
+  "stack": "text",
+  "request": {
+    "method": "POST",
+    "path": "/v1/responses",
+    "json": {
+      "model": "gemma-4-e4b-it-q4_k_m",
+      "input": "call_tool",
+      "tool_choice": {"type": "function", "name": "get_weather"},
+      "tools": [
+        {
+          "type": "function",
+          "name": "get_weather",
+          "parameters": {"type": "object", "properties": {}}
+        }
+      ]
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "id", "prefix": "resp_"},
+      {"path": "object", "equals": "response"},
+      {"path": "status", "equals": "completed"},
+      {"path": "model", "equals": "gemma-4-e4b-it-q4_k_m"},
+      {"path": "output_text", "equals": ""},
+      {"path": "output.0.type", "equals": "function_call"},
+      {"path": "output.0.call_id", "prefix": "call_"},
+      {"path": "output.0.name", "equals": "get_weather"},
+      {"path": "output.0.arguments", "equals": "{}"},
+      {"path": "usage.total_tokens", "equals": 0}
+    ]
+  }
+}

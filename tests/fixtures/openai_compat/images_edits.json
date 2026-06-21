@@ -1,0 +1,28 @@
+{
+  "name": "images.edits",
+  "stack": "image_edit",
+  "patch": "inpaint_inputs",
+  "request": {
+    "method": "POST",
+    "path": "/v1/images/edits",
+    "form": {
+      "model": "sd-1.5-inpainting",
+      "prompt": "replace the window with a painting",
+      "response_format": "b64_json",
+      "seed": "50"
+    },
+    "files": [
+      {"field": "image", "filename": "base.png", "content_base64": "YmFzZS1ieXRlcw==", "content_type": "image/png"},
+      {"field": "mask", "filename": "mask.png", "content_base64": "bWFzay1ieXRlcw==", "content_type": "image/png"}
+    ]
+  },
+  "expect": {
+    "status_code": 200,
+    "lengths": [
+      {"path": "data", "equals": 1}
+    ],
+    "base64": [
+      {"path": "data.0.b64_json", "equals": "fake-edited-png"}
+    ]
+  }
+}

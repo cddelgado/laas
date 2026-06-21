@@ -1,0 +1,35 @@
+{
+  "name": "chat.completions.tool",
+  "stack": "text",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "json": {
+      "model": "gemma-4-e4b-it-q4_k_m",
+      "messages": [{"role": "user", "content": "call_tool"}],
+      "tool_choice": {"type": "function", "function": {"name": "get_weather"}},
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {"type": "object", "properties": {}}
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "object", "equals": "chat.completion"},
+      {"path": "choices.0.finish_reason", "equals": "tool_calls"},
+      {"path": "choices.0.message.content", "equals": null},
+      {"path": "choices.0.message.tool_calls.0.id", "prefix": "call_"},
+      {"path": "choices.0.message.tool_calls.0.type", "equals": "function"},
+      {"path": "choices.0.message.tool_calls.0.function.name", "equals": "get_weather"},
+      {"path": "choices.0.message.tool_calls.0.function.arguments", "equals": "{}"}
+    ]
+  }
+}

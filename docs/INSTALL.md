@@ -832,6 +832,56 @@ Run tests:
 python -m pytest
 ```
 
+Run only the OpenAI compatibility golden fixtures:
+
+```bash
+python -m pytest tests/test_api.py -k openai_compat_golden_fixture
+```
+
+The live smoke tests are opt-in because they call a running server and may load
+large local model stacks. Start LAAS first, then enable only the stacks you want
+to test.
+
+Windows PowerShell:
+
+```powershell
+$env:LAAS_LIVE_SMOKE = "true"
+$env:LAAS_SMOKE_BASE_URL = "http://127.0.0.1:8000"
+python -m pytest tests/test_api.py -k live_smoke_text_stack
+```
+
+macOS/Linux:
+
+```bash
+LAAS_LIVE_SMOKE=true LAAS_SMOKE_BASE_URL=http://127.0.0.1:8000 \
+  python -m pytest tests/test_api.py -k live_smoke_text_stack
+```
+
+Optional live image and voice stacks use separate switches:
+
+```bash
+LAAS_LIVE_SMOKE_IMAGES=true python -m pytest tests/test_api.py -k live_smoke_image_stack
+LAAS_LIVE_SMOKE_VOICE=true python -m pytest tests/test_api.py -k live_smoke_voice_stack
+```
+
+By default, the live pytest checks request `download_if_missing=false` on local
+load endpoints. Set `LAAS_SMOKE_DOWNLOAD_IF_MISSING=true` only when you want the
+test to trigger missing model downloads.
+
+To test through the official OpenAI Python client, install dev dependencies,
+start LAAS, then run:
+
+```bash
+python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000
+```
+
+Optional heavier checks:
+
+```bash
+python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image
+python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image --include-image-edit --include-voice
+```
+
 ## 11. Unload
 
 Windows PowerShell:

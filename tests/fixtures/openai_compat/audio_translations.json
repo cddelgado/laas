@@ -1,0 +1,21 @@
+{
+  "name": "audio.translations",
+  "stack": "voice",
+  "request": {
+    "method": "POST",
+    "path": "/v1/audio/translations",
+    "form": {
+      "model": "whisper-1",
+      "response_format": "json"
+    },
+    "files": [
+      {"field": "file", "filename": "sample.wav", "content_base64": "ZmFrZSBhdWRpbyBieXRlcw==", "content_type": "audio/wav"}
+    ]
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "text", "equals": "hello from whisper"}
+    ]
+  }
+}

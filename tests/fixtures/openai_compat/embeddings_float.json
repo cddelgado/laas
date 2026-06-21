@@ -1,0 +1,28 @@
+{
+  "name": "embeddings.float",
+  "stack": "text",
+  "request": {
+    "method": "POST",
+    "path": "/v1/embeddings",
+    "json": {
+      "model": "laas-hash-embedding",
+      "input": ["alpha", "beta"],
+      "dimensions": 8
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "object", "equals": "list"},
+      {"path": "model", "equals": "laas-hash-embedding"},
+      {"path": "data.0.object", "equals": "embedding"},
+      {"path": "data.0.index", "equals": 0},
+      {"path": "data.1.index", "equals": 1},
+      {"path": "usage.prompt_tokens", "equals": 2}
+    ],
+    "lengths": [
+      {"path": "data", "equals": 2},
+      {"path": "data.0.embedding", "equals": 8}
+    ]
+  }
+}

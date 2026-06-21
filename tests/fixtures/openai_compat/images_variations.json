@@ -1,0 +1,26 @@
+{
+  "name": "images.variations",
+  "stack": "image",
+  "request": {
+    "method": "POST",
+    "path": "/v1/images/variations",
+    "form": {
+      "model": "sdxl-turbo",
+      "response_format": "b64_json",
+      "size": "512x512",
+      "seed": "80"
+    },
+    "files": [
+      {"field": "image", "filename": "source.png", "content_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC", "content_type": "image/png"}
+    ]
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "data.0.b64_json", "prefix": "iVBOR"}
+    ],
+    "lengths": [
+      {"path": "data", "equals": 1}
+    ]
+  }
+}

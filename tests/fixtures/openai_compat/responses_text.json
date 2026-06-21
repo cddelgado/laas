@@ -1,0 +1,26 @@
+{
+  "name": "responses.text",
+  "stack": "text",
+  "request": {
+    "method": "POST",
+    "path": "/v1/responses",
+    "json": {
+      "model": "gemma-4-e4b-it-q4_k_m",
+      "input": "hello"
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "id", "prefix": "resp_"},
+      {"path": "object", "equals": "response"},
+      {"path": "status", "equals": "completed"},
+      {"path": "model", "equals": "gemma-4-e4b-it-q4_k_m"},
+      {"path": "output_text", "equals": "hello"},
+      {"path": "output.0.type", "equals": "message"},
+      {"path": "output.0.role", "equals": "assistant"},
+      {"path": "output.0.content.0.type", "equals": "output_text"},
+      {"path": "output.0.content.0.text", "equals": "hello"}
+    ]
+  }
+}

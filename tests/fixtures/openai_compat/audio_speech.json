@@ -1,0 +1,24 @@
+{
+  "name": "audio.speech",
+  "stack": "audio",
+  "request": {
+    "method": "POST",
+    "path": "/v1/audio/speech",
+    "json": {
+      "model": "tts-1",
+      "input": "hello from kokoro",
+      "voice": "alloy",
+      "response_format": "pcm",
+      "speed": 1.25,
+      "lang": "en-us"
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "headers": [
+      {"name": "content-type", "equals": "audio/pcm"},
+      {"name": "x-laas-audio-sample-rate", "equals": "24000"}
+    ],
+    "body_base64": "AAD/PwHA"
+  }
+}

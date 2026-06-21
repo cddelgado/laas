@@ -1,0 +1,25 @@
+{
+  "name": "chat.completions.text",
+  "stack": "text",
+  "request": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "json": {
+      "model": "gemma-4-e4b-it-q4_k_m",
+      "messages": [{"role": "user", "content": "hello"}]
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "id", "prefix": "chatcmpl"},
+      {"path": "object", "equals": "chat.completion"},
+      {"path": "model", "equals": "gemma-4-e4b-it-q4_k_m"},
+      {"path": "choices.0.index", "equals": 0},
+      {"path": "choices.0.message.role", "equals": "assistant"},
+      {"path": "choices.0.message.content", "equals": "hello"},
+      {"path": "choices.0.finish_reason", "equals": "stop"},
+      {"path": "usage.total_tokens", "equals": 0}
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "images.generations",
+  "stack": "image",
+  "request": {
+    "method": "POST",
+    "path": "/v1/images/generations",
+    "json": {
+      "model": "sdxl-turbo",
+      "prompt": "a tiny robot repairing a neon sign",
+      "size": "512x384",
+      "response_format": "b64_json",
+      "num_inference_steps": 3,
+      "guidance_scale": 0.5,
+      "seed": 42
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "data.0.revised_prompt", "equals": "a tiny robot repairing a neon sign"}
+    ],
+    "lengths": [
+      {"path": "data", "equals": 1}
+    ],
+    "base64": [
+      {"path": "data.0.b64_json", "equals": "fake-png"}
+    ]
+  }
+}

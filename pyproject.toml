@@ -35,6 +35,7 @@ image = [
 ]
 dev = [
     "httpx>=0.27.0",
+    "openai>=1.0.0",
     "pytest>=8.3.0",
 ]
 

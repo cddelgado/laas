@@ -1,0 +1,25 @@
+{
+  "name": "completions.text",
+  "stack": "text",
+  "request": {
+    "method": "POST",
+    "path": "/v1/completions",
+    "json": {
+      "model": "gemma-4-e4b-it-q4_k_m",
+      "prompt": "hello",
+      "max_tokens": 16
+    }
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "id", "prefix": "cmpl"},
+      {"path": "object", "equals": "text_completion"},
+      {"path": "model", "equals": "gemma-4-e4b-it-q4_k_m"},
+      {"path": "choices.0.index", "equals": 0},
+      {"path": "choices.0.text", "equals": "hello"},
+      {"path": "choices.0.finish_reason", "equals": "stop"},
+      {"path": "usage.total_tokens", "equals": 0}
+    ]
+  }
+}

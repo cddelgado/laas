@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from laas.app import create_app
@@ -35,6 +37,7 @@ from laas.tts import AudioBackend, AudioEncoderMissingError, AudioManager, Synth
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 )
+OPENAI_COMPAT_FIXTURES = Path(__file__).parent / "fixtures" / "openai_compat"
 
 
 def make_client(tmp_path: Path, *, write_model: bool = True, auto_download: bool = False) -> TestClient:
@@ -385,6 +388,204 @@ def make_voice_client(
         )
     )
     return client, audio_backend, transcription_backend
+
+
+def golden_fixture_names() -> list[str]:
+    return sorted(path.name for path in OPENAI_COMPAT_FIXTURES.glob("*.json"))
+
+
+def golden_client(stack: str, tmp_path: Path) -> TestClient:
+    if stack == "text":
+        return make_client(tmp_path)
+    if stack == "image":
+        client, _backend = make_image_client(tmp_path)
+        return client
+    if stack == "image_edit":
+        client, _backend = make_image_edit_client(tmp_path)
+        return client
+    if stack == "audio":
+        client, _backend = make_audio_client(tmp_path)
+        return client
+    if stack == "voice":
+        client, _audio_backend, _transcription_backend = make_voice_client(tmp_path)
+        return client
+    raise AssertionError(f"Unknown golden fixture stack: {stack}")
+
+
+def send_golden_request(client: TestClient, fixture: dict[str, Any]):
+    request = fixture["request"]
+    method = request["method"]
+    path = request["path"]
+    if method == "GET":
+        return client.get(path)
+    if method != "POST":
+        raise AssertionError(f"Unsupported golden fixture method: {method}")
+    if "files" in request:
+        files = {
+            item["field"]: (
+                item["filename"],
+                base64.b64decode(item["content_base64"]),
+                item["content_type"],
+            )
+            for item in request["files"]
+        }
+        return client.post(path, data=request.get("form", {}), files=files)
+    return client.post(path, json=request.get("json", {}))
+
+
+def value_at_path(payload: Any, path: str) -> Any:
+    value = payload
+    for part in path.split("."):
+        if isinstance(value, list):
+            value = value[int(part)]
+        else:
+            value = value[part]
+    return value
+
+
+def assert_golden_response(response, fixture: dict[str, Any]) -> None:
+    expected = fixture["expect"]
+    assert response.status_code == expected["status_code"]
+
+    for header in expected.get("headers", []):
+        assert response.headers[header["name"]] == header["equals"]
+
+    if "body_base64" in expected:
+        assert response.content == base64.b64decode(expected["body_base64"])
+
+    if any(key in expected for key in ("paths", "lengths", "base64")):
+        payload = response.json()
+        for assertion in expected.get("paths", []):
+            value = value_at_path(payload, assertion["path"])
+            if "equals" in assertion:
+                assert value == assertion["equals"]
+            if "prefix" in assertion:
+                assert isinstance(value, str)
+                assert value.startswith(assertion["prefix"])
+        for assertion in expected.get("lengths", []):
+            assert len(value_at_path(payload, assertion["path"])) == assertion["equals"]
+        for assertion in expected.get("base64", []):
+            value = value_at_path(payload, assertion["path"])
+            assert base64.b64decode(value) == assertion["equals"].encode("utf-8")
+
+
+@pytest.mark.parametrize("fixture_name", golden_fixture_names())
+def test_openai_compat_golden_fixture(fixture_name: str, tmp_path: Path, monkeypatch) -> None:
+    fixture = json.loads((OPENAI_COMPAT_FIXTURES / fixture_name).read_text(encoding="utf-8"))
+    if fixture.get("patch") == "inpaint_inputs":
+        monkeypatch.setattr("laas.app.prepare_inpaint_inputs", lambda **kwargs: ("base-image", "mask-image"))
+    response = send_golden_request(golden_client(fixture["stack"], tmp_path), fixture)
+    assert_golden_response(response, fixture)
+
+
+def live_smoke_enabled(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+
+def live_smoke_base_url() -> str:
+    return os.environ.get("LAAS_SMOKE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
+def live_smoke_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {os.environ.get('LAAS_SMOKE_API_KEY', 'laas-local')}"}
+
+
+def live_download_if_missing() -> bool:
+    return live_smoke_enabled("LAAS_SMOKE_DOWNLOAD_IF_MISSING")
+
+
+def assert_live_ok(response, label: str) -> None:
+    assert response.status_code < 400, f"{label} failed: {response.status_code} {response.text}"
+
+
+def silent_wav_bytes() -> bytes:
+    import io
+    import wave
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * 1600)
+    return buffer.getvalue()
+
+
+def test_live_smoke_text_stack() -> None:
+    if not live_smoke_enabled("LAAS_LIVE_SMOKE"):
+        pytest.skip("set LAAS_LIVE_SMOKE=true to run against a live LAAS server")
+
+    import httpx
+
+    with httpx.Client(base_url=live_smoke_base_url(), headers=live_smoke_headers(), timeout=120.0) as client:
+        assert_live_ok(client.get("/v1/models"), "models.list")
+        assert_live_ok(
+            client.post("/v1/local/models/load", json={"download_if_missing": live_download_if_missing()}),
+            "local.models.load",
+        )
+        chat = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hello"}]})
+        assert_live_ok(chat, "chat.completions")
+        assert chat.json()["object"] == "chat.completion"
+
+        response = client.post("/v1/responses", json={"input": "hello"})
+        assert_live_ok(response, "responses")
+        assert response.json()["object"] == "response"
+
+        embeddings = client.post("/v1/embeddings", json={"input": "alpha", "dimensions": 8})
+        assert_live_ok(embeddings, "embeddings")
+        assert embeddings.json()["object"] == "list"
+
+
+def test_live_smoke_image_stack() -> None:
+    if not live_smoke_enabled("LAAS_LIVE_SMOKE_IMAGES"):
+        pytest.skip("set LAAS_LIVE_SMOKE_IMAGES=true to run image smoke tests against a live LAAS server")
+
+    import httpx
+
+    with httpx.Client(base_url=live_smoke_base_url(), headers=live_smoke_headers(), timeout=600.0) as client:
+        assert_live_ok(
+            client.post("/v1/local/images/load", json={"download_if_missing": live_download_if_missing()}),
+            "local.images.load",
+        )
+        image = client.post(
+            "/v1/images/generations",
+            json={
+                "prompt": "a small brass table lamp, realistic lighting",
+                "size": "512x512",
+                "response_format": "b64_json",
+                "n": 1,
+                "seed": 42,
+            },
+        )
+        assert_live_ok(image, "images.generations")
+        assert base64.b64decode(image.json()["data"][0]["b64_json"])
+
+
+def test_live_smoke_voice_stack() -> None:
+    if not live_smoke_enabled("LAAS_LIVE_SMOKE_VOICE"):
+        pytest.skip("set LAAS_LIVE_SMOKE_VOICE=true to run voice smoke tests against a live LAAS server")
+
+    import httpx
+
+    with httpx.Client(base_url=live_smoke_base_url(), headers=live_smoke_headers(), timeout=300.0) as client:
+        assert_live_ok(
+            client.post("/v1/local/voice/load", json={"download_if_missing": live_download_if_missing()}),
+            "local.voice.load",
+        )
+        speech = client.post(
+            "/v1/audio/speech",
+            json={"model": "tts-1", "input": "hello from LAAS", "voice": "alloy", "response_format": "wav"},
+        )
+        assert_live_ok(speech, "audio.speech")
+        assert speech.content
+
+        transcription = client.post(
+            "/v1/audio/transcriptions",
+            data={"model": "whisper-1", "response_format": "json"},
+            files={"file": ("silence.wav", silent_wav_bytes(), "audio/wav")},
+        )
+        assert_live_ok(transcription, "audio.transcriptions")
+        assert "text" in transcription.json()
 
 
 def test_models_and_local_status(tmp_path: Path) -> None:

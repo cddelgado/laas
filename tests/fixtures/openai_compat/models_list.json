@@ -1,0 +1,19 @@
+{
+  "name": "models.list",
+  "stack": "text",
+  "request": {
+    "method": "GET",
+    "path": "/v1/models"
+  },
+  "expect": {
+    "status_code": 200,
+    "paths": [
+      {"path": "object", "equals": "list"},
+      {"path": "data.0.object", "equals": "model"},
+      {"path": "data.0.id", "equals": "gemma-4-e4b-it-q4_k_m"},
+      {"path": "data.1.id", "equals": "laas-hash-embedding"},
+      {"path": "data.2.id", "equals": "sdxl-turbo"},
+      {"path": "data.3.id", "equals": "sd-1.5-inpainting"}
+    ]
+  }
+}

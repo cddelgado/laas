@@ -757,6 +757,36 @@ embedding = client.embeddings.create(
 print(len(embedding.data[0].embedding))
 ```
 
+## Compatibility Testing
+
+Golden OpenAI-compatible request/response fixtures live under
+`tests/fixtures/openai_compat`.
+
+Run the fixture suite:
+
+```bash
+python -m pytest tests/test_api.py -k openai_compat_golden_fixture
+```
+
+Run the official OpenAI Python client smoke script against a running LAAS
+server:
+
+```bash
+python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000
+```
+
+Optional heavier checks:
+
+```bash
+python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image
+python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image --include-image-edit --include-voice
+```
+
+Live pytest smoke tests are disabled unless the relevant environment variables
+are set: `LAAS_LIVE_SMOKE=true`, `LAAS_LIVE_SMOKE_IMAGES=true`, or
+`LAAS_LIVE_SMOKE_VOICE=true`. See [docs/INSTALL.md](docs/INSTALL.md) for the
+full commands and download-safety switch.
+
 ## Notes
 
 Gemma 4 E4B is exposed as a text-output model with text, tool-call, image,
