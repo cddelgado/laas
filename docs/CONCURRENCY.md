@@ -86,6 +86,22 @@ def wrap_stream(self, resource: HeavyResourceType, generator: Iterable[Any]) -> 
 ### Manual Lifecycle Integration
 Endpoints that trigger model loading or unloading manually (e.g., `/v1/local/models/load` or `/v1/local/models/unload`) enter a coordinator maintenance window. Maintenance waits for active heavy-model requests to drain before loading, unloading, or swapping resources.
 
+### Runtime Status
+Use `GET /v1/local/concurrency/status` to inspect the coordinator while the
+server is running. The response includes:
+
+- `active_resource`: the heavy resource currently holding the coordinator lease.
+- `active_jobs`: active job counts for `llm`, `image`, and `image_edit`.
+- `total_active_jobs`: total heavy jobs currently running.
+- `registered_resources`: heavy resources known to the coordinator.
+- `resources`: per-resource registered, loaded, manager, and active-job state.
+
+PowerShell:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/concurrency/status
+```
+
 ---
 
 ## 5. Verification and Testing
@@ -95,4 +111,10 @@ Integration tests verifying the concurrency layer are located in [tests/test_con
 To execute the concurrency test suite:
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_concurrency.py
+```
+
+To run a live smoke against a running server:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\concurrency_smoke.py --include-image-edit
 ```

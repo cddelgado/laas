@@ -31,6 +31,26 @@ class ConcurrencyCoordinator:
         with self.lock:
             self.managers[resource] = manager
 
+    def status(self) -> dict[str, Any]:
+        """Returns a lock-protected snapshot of heavy-resource coordination state."""
+        with self.lock:
+            resources = {
+                resource: {
+                    "active_jobs": self.active_jobs.get(resource, 0),
+                    "registered": resource in self.managers,
+                    "is_loaded": bool(getattr(self.managers.get(resource), "is_loaded", False)),
+                    "manager": type(self.managers[resource]).__name__ if resource in self.managers else None,
+                }
+                for resource in self.active_jobs
+            }
+            return {
+                "active_resource": self.active_resource,
+                "active_jobs": dict(self.active_jobs),
+                "total_active_jobs": sum(self.active_jobs.values()),
+                "registered_resources": sorted(self.managers),
+                "resources": resources,
+            }
+
     def acquire(self, resource: HeavyResourceType) -> None:
         """Acquires execution rights for a resource, loading it and unloading others if needed."""
         with self.lock:
@@ -39,30 +59,22 @@ class ConcurrencyCoordinator:
             # No other resource has active jobs. We can safely unload other loaded resources.
             self._unload_other_resources_locked(resource)
 
-            # Ensure the target resource is loaded
             mgr = self.managers.get(resource)
-            if mgr is not None:
-                try:
-                    if not getattr(mgr, "is_loaded", False):
-                        logger.info(f"Loading resource '{resource}' under serialization lock")
-                        download_if_missing = True
-                        if hasattr(mgr, "settings"):
-                            if resource == "llm":
-                                download_if_missing = getattr(mgr.settings, "auto_download", True)
-                            elif resource == "image":
-                                download_if_missing = getattr(mgr.settings, "image_auto_download", True)
-                            elif resource == "image_edit":
-                                download_if_missing = getattr(mgr.settings, "image_edit_auto_download", True)
-                        mgr.load(download_if_missing=download_if_missing)
-                except Exception:
-                    # Notify others if we crashed during load, so they don't wait indefinitely
-                    self.condition.notify_all()
-                    raise
+            needs_load = mgr is not None and not getattr(mgr, "is_loaded", False)
+            download_if_missing = self._download_if_missing(resource, mgr)
 
             # Increment active job counter
             self.active_jobs[resource] += 1
             self.active_resource = resource
             logger.debug(f"Acquired resource '{resource}' (active jobs: {self.active_jobs[resource]})")
+
+        if mgr is not None and needs_load:
+            try:
+                logger.info("Loading resource '%s' under coordinator lease", resource)
+                mgr.load(download_if_missing=download_if_missing)
+            except Exception:
+                self.release(resource)
+                raise
 
     def release(self, resource: HeavyResourceType) -> None:
         """Releases execution rights for a resource."""
@@ -124,6 +136,18 @@ class ConcurrencyCoordinator:
                     logger.error("Error unloading resource '%s': %s", other_resource, exc)
         if unloaded_any:
             self.clear_accelerator_cache()
+
+    @staticmethod
+    def _download_if_missing(resource: HeavyResourceType, manager: Any) -> bool:
+        if not hasattr(manager, "settings"):
+            return True
+        if resource == "llm":
+            return bool(getattr(manager.settings, "auto_download", True))
+        if resource == "image":
+            return bool(getattr(manager.settings, "image_auto_download", True))
+        if resource == "image_edit":
+            return bool(getattr(manager.settings, "image_edit_auto_download", True))
+        return True
 
     @staticmethod
     def clear_accelerator_cache() -> None:

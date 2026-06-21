@@ -217,6 +217,10 @@ def create_app(
     def compatibility() -> dict[str, Any]:
         return {"object": "local.compatibility_matrix", "data": COMPATIBILITY_MATRIX}
 
+    @app.get("/v1/local/concurrency/status")
+    def concurrency_status() -> dict[str, Any]:
+        return coordinator.status()
+
     @app.post("/v1/local/models/download")
     def download_model(request: DownloadModelRequest) -> dict[str, Any]:
         if request.hf_repo_id or request.filename:

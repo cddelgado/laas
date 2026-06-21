@@ -572,6 +572,18 @@ LAAS includes a thread-safe VRAM Concurrency Coordinator to serialize heavy GPU-
 - Stream-wraps completions to hold the serialization lock until the client finishes reading.
 - Bypasses lightweight CPU-bound endpoints (Kokoro TTS, Whisper STT) to keep them concurrently accessible.
 
+Inspect coordinator state while requests are running:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/local/concurrency/status
+```
+
+Run a live concurrency smoke against a running server:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\concurrency_smoke.py --include-image-edit
+```
+
 For detailed design and configuration, see [docs/CONCURRENCY.md](docs/CONCURRENCY.md).
 
 ## Local Voice Stack

@@ -227,3 +227,96 @@ def test_manual_unload_waits_for_active_inference(tmp_path: Path) -> None:
     assert not chat_thread.is_alive()
     assert not unload_thread.is_alive()
     assert events == ["chat_start", "chat_end", "close"]
+
+
+def test_concurrency_status_reports_active_and_loaded_resources(tmp_path: Path) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        mmproj_required=False,
+    )
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"dummy")
+
+    chat_started = threading.Event()
+    release_chat = threading.Event()
+
+    class PausedBackend(EchoBackend):
+        def chat_completion(self, *args, **kwargs):
+            chat_started.set()
+            assert release_chat.wait(timeout=2)
+            return super().chat_completion(*args, **kwargs)
+
+    manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: PausedBackend())
+    client = TestClient(create_app(settings=settings, manager=manager))
+
+    def run_chat() -> None:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hold"}]},
+        )
+        assert response.status_code == 200
+
+    chat_thread = threading.Thread(target=run_chat)
+    chat_thread.start()
+    assert chat_started.wait(timeout=2)
+
+    active = client.get("/v1/local/concurrency/status").json()
+    assert active["active_resource"] == "llm"
+    assert active["active_jobs"]["llm"] == 1
+    assert active["total_active_jobs"] == 1
+    assert active["resources"]["llm"]["registered"] is True
+    assert active["resources"]["llm"]["is_loaded"] is True
+    assert set(active["registered_resources"]) == {"image", "image_edit", "llm"}
+
+    release_chat.set()
+    chat_thread.join(timeout=5)
+    assert not chat_thread.is_alive()
+
+    idle = client.get("/v1/local/concurrency/status").json()
+    assert idle["active_resource"] is None
+    assert idle["total_active_jobs"] == 0
+    assert idle["resources"]["llm"]["is_loaded"] is True
+
+
+def test_concurrency_status_responds_while_resource_is_loading(tmp_path: Path) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        mmproj_required=False,
+    )
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"dummy")
+
+    load_started = threading.Event()
+    finish_load = threading.Event()
+
+    def backend_factory(model_path: Path, active_settings: Settings) -> EchoBackend:
+        load_started.set()
+        assert finish_load.wait(timeout=2)
+        return EchoBackend()
+
+    manager = ModelManager(settings, backend_factory=backend_factory)
+    client = TestClient(create_app(settings=settings, manager=manager))
+
+    def run_chat() -> None:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "load then answer"}]},
+        )
+        assert response.status_code == 200
+
+    chat_thread = threading.Thread(target=run_chat)
+    chat_thread.start()
+    assert load_started.wait(timeout=2)
+
+    response = client.get("/v1/local/concurrency/status")
+    assert response.status_code == 200
+    status = response.json()
+    assert status["active_resource"] == "llm"
+    assert status["active_jobs"]["llm"] == 1
+    assert status["resources"]["llm"]["is_loaded"] is False
+
+    finish_load.set()
+    chat_thread.join(timeout=5)
+    assert not chat_thread.is_alive()
