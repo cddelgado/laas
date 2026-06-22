@@ -2791,14 +2791,56 @@ def test_openai_realtime_session_endpoint_wraps_voice_stack(tmp_path: Path) -> N
         assert websocket.receive_json()["type"] == "input_audio_buffer.appended"
 
         websocket.send_json({"type": "response.create", "filename": "sample.wav"})
+        response_created = websocket.receive_json()
+        assert response_created["type"] == "response.created"
+        response_id = response_created["response"]["id"]
+
+        item_added = websocket.receive_json()
+        assert item_added["type"] == "response.output_item.added"
+        assert item_added["response_id"] == response_id
+        item_id = item_added["item"]["id"]
+
+        text_delta = websocket.receive_json()
+        assert text_delta["type"] == "response.output_text.delta"
+        assert text_delta["response_id"] == response_id
+        assert text_delta["item_id"] == item_id
+        assert text_delta["delta"] == "hello from whisper"
+
+        text_done = websocket.receive_json()
+        assert text_done["type"] == "response.output_text.done"
+        assert text_done["response_id"] == response_id
+        assert text_done["item_id"] == item_id
+        assert text_done["text"] == "hello from whisper"
+
+        audio_chunks = []
+        while True:
+            audio_event = websocket.receive_json()
+            if audio_event["type"] == "response.audio.delta":
+                assert audio_event["response_id"] == response_id
+                assert audio_event["item_id"] == item_id
+                assert audio_event["format"] == "wav"
+                audio_chunks.append(base64.b64decode(audio_event["delta"]))
+                continue
+            assert audio_event["type"] == "response.audio.done"
+            assert audio_event["response_id"] == response_id
+            assert audio_event["item_id"] == item_id
+            break
+
+        item_done = websocket.receive_json()
+        assert item_done["type"] == "response.output_item.done"
+        assert item_done["response_id"] == response_id
+        assert item_done["item"]["id"] == item_id
+
         completed = websocket.receive_json()
         assert completed["type"] == "response.completed"
+        assert completed["response"]["id"] == response_id
         assert completed["response"]["object"] == "realtime.response"
         assert completed["response"]["status"] == "completed"
         content = completed["response"]["output"][0]["content"]
         assert content[0]["type"] == "output_text"
         assert content[1]["type"] == "output_audio"
         assert content[1]["format"] == "wav"
+        assert b"".join(audio_chunks) == base64.b64decode(content[1]["audio"])
         assert completed["laas_turn"]["transcript"]["language"] == "en"
 
         websocket.send_json({"type": "response.cancel"})

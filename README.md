@@ -786,8 +786,24 @@ or a one-shot turn:
 The local route replies with `response.completed` containing the same turn
 payload as the HTTP endpoint. The OpenAI-shaped route replies with a
 `realtime.response` object and includes the full local payload under
-`laas_turn`. Both routes accept `session.update`, `input_audio_buffer.clear`,
+`laas_turn`. It also emits `response.created`, output item events,
+`response.output_text.delta`, and `response.audio.delta` before the final
+completion event. With the current Kokoro backend, audio deltas are chunked from
+the completed TTS buffer rather than produced by native streaming synthesis.
+Both routes accept `session.update`, `input_audio_buffer.clear`,
 `response.cancel`, and `session.close` control events.
+
+Run a live realtime voice smoke against a server with the voice stack loaded:
+
+```powershell
+python .\scripts\realtime_voice_smoke.py --base-url http://127.0.0.1:8000 --output .\realtime-smoke-output.wav
+```
+
+macOS/Linux:
+
+```bash
+python scripts/realtime_voice_smoke.py --base-url http://127.0.0.1:8000 --output realtime-smoke-output.wav
+```
 
 Unload the full voice stack when you are done:
 
@@ -956,6 +972,7 @@ Optional heavier checks:
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image --include-image-edit --include-voice
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-storage
+python scripts/realtime_voice_smoke.py --base-url http://127.0.0.1:8000
 python scripts/multimodal_fidelity_smoke.py --base-url http://127.0.0.1:8000
 ```
 

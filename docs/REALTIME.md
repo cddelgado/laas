@@ -77,8 +77,8 @@ WebSocket.
 | `session.update` | Supported local compatibility subset | Updates `instructions`, `voice`, `response_format`, `language`, `prompt`, `temperature`, `speed`, and `lang`. Replies with `session.updated`. |
 | `input_audio_buffer.append` | Supported | Appends base64 audio bytes to the current buffer. Replies with `input_audio_buffer.appended`. |
 | `input_audio_buffer.clear` | Supported | Clears the current audio buffer. Replies with `input_audio_buffer.cleared`. |
-| `input_audio_buffer.commit` | Supported | Runs one full local voice turn from buffered audio. Replies with `response.completed`. |
-| `response.create` | Supported as alias | Runs one full local voice turn from buffered audio. Replies with `response.completed`. |
+| `input_audio_buffer.commit` | Supported | Runs one full local voice turn from buffered audio. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
+| `response.create` | Supported as alias | Runs one full local voice turn from buffered audio. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
 | `response.cancel` | Supported control event | Replies with `response.cancelled`. No in-flight model cancellation is attempted yet. |
 | `voice.turn` | LAAS extension | One-shot event with inline base64 audio. Replies with `response.completed`. |
 | `session.close` / `close` | Supported | Ends and removes the local session. |
@@ -131,8 +131,26 @@ Successful turns reply with:
 
 The output shape is local and intentionally mirrors the HTTP voice turn payload.
 
-The OpenAI-shaped route sends the same event type with a `realtime.response`
-wrapper and keeps the full LAAS turn payload in `laas_turn`:
+The OpenAI-shaped route sends these events for a completed local turn:
+
+```text
+response.created
+response.output_item.added
+response.output_text.delta
+response.output_text.done
+response.audio.delta
+response.audio.done
+response.output_item.done
+response.completed
+```
+
+`response.audio.delta` contains base64-encoded chunks of the final encoded
+audio. With the current Kokoro backend, LAAS emits these chunks after TTS
+returns a whole buffer. The event shape is streaming-compatible, but it is not
+yet true low-latency chunk synthesis.
+
+The final `response.completed` event contains a `realtime.response` wrapper and
+keeps the full LAAS turn payload in `laas_turn`:
 
 ```json
 {
@@ -197,7 +215,7 @@ The following are intentionally out of scope for the current local bridge:
 - Hosted ephemeral token/session APIs
 - Full `conversation.item.*` event graph
 - Server-side VAD
-- Audio delta streaming
+- Native chunk-by-chunk TTS generation before the local TTS backend returns
 - Native LLM audio input/output
 - Tool calls over Realtime
 - Model-side interruption or cancellation

@@ -848,37 +848,153 @@ def create_app(
         session_id: str,
         turn_payload: dict[str, Any],
         openai_shape: bool,
+        response_id: str | None = None,
+        item_id: str | None = None,
     ) -> dict[str, Any]:
         if not openai_shape:
             return {"type": "response.completed", "session_id": session_id, "turn": turn_payload}
-        response_id = f"resp_{uuid.uuid4().hex}"
         return {
             "type": "response.completed",
-            "response": {
-                "id": response_id,
-                "object": "realtime.response",
-                "status": "completed",
-                "output": [
-                    {
-                        "id": f"item_{uuid.uuid4().hex}",
-                        "object": "realtime.item",
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [
-                            {"type": "output_text", "text": turn_payload["response"]["text"]},
-                            {
-                                "type": "output_audio",
-                                "audio": turn_payload["audio"]["data"],
-                                "format": turn_payload["audio"]["format"],
-                                "media_type": turn_payload["audio"]["media_type"],
-                                "sample_rate": turn_payload["audio"]["sample_rate"],
-                            },
-                        ],
-                    }
-                ],
-            },
+            "response": _openai_realtime_response(
+                turn_payload,
+                response_id=response_id or f"resp_{uuid.uuid4().hex}",
+                item_id=item_id or f"item_{uuid.uuid4().hex}",
+                status="completed",
+            ),
             "laas_turn": turn_payload,
         }
+
+    def _openai_realtime_response(
+        turn_payload: dict[str, Any],
+        *,
+        response_id: str,
+        item_id: str,
+        status: str,
+    ) -> dict[str, Any]:
+        return {
+            "id": response_id,
+            "object": "realtime.response",
+            "status": status,
+            "output": [
+                {
+                    "id": item_id,
+                    "object": "realtime.item",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": status,
+                    "content": [
+                        {"type": "output_text", "text": turn_payload["response"]["text"]},
+                        {
+                            "type": "output_audio",
+                            "audio": turn_payload["audio"]["data"],
+                            "format": turn_payload["audio"]["format"],
+                            "media_type": turn_payload["audio"]["media_type"],
+                            "sample_rate": turn_payload["audio"]["sample_rate"],
+                        },
+                    ],
+                }
+            ],
+        }
+
+    def _openai_realtime_audio_delta_chunks(turn_payload: dict[str, Any], chunk_size: int = 16 * 1024) -> list[str]:
+        audio_bytes = base64.b64decode(turn_payload["audio"]["data"])
+        if not audio_bytes:
+            return []
+        return [
+            base64.b64encode(audio_bytes[index : index + chunk_size]).decode("ascii")
+            for index in range(0, len(audio_bytes), chunk_size)
+        ]
+
+    async def _send_openai_realtime_turn_events(
+        websocket: WebSocket,
+        turn_payload: dict[str, Any],
+        *,
+        response_id: str,
+    ) -> None:
+        item_id = f"item_{uuid.uuid4().hex}"
+        await websocket.send_json(
+            {
+                "type": "response.output_item.added",
+                "response_id": response_id,
+                "output_index": 0,
+                "item": {
+                    "id": item_id,
+                    "object": "realtime.item",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "content": [],
+                },
+            }
+        )
+        text = turn_payload["response"]["text"]
+        if text:
+            await websocket.send_json(
+                {
+                    "type": "response.output_text.delta",
+                    "response_id": response_id,
+                    "item_id": item_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": text,
+                }
+            )
+            await websocket.send_json(
+                {
+                    "type": "response.output_text.done",
+                    "response_id": response_id,
+                    "item_id": item_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": text,
+                }
+            )
+        for chunk in _openai_realtime_audio_delta_chunks(turn_payload):
+            await websocket.send_json(
+                {
+                    "type": "response.audio.delta",
+                    "response_id": response_id,
+                    "item_id": item_id,
+                    "output_index": 0,
+                    "content_index": 1,
+                    "delta": chunk,
+                    "format": turn_payload["audio"]["format"],
+                    "media_type": turn_payload["audio"]["media_type"],
+                    "sample_rate": turn_payload["audio"]["sample_rate"],
+                }
+            )
+        await websocket.send_json(
+            {
+                "type": "response.audio.done",
+                "response_id": response_id,
+                "item_id": item_id,
+                "output_index": 0,
+                "content_index": 1,
+            }
+        )
+        completed_item = _openai_realtime_response(
+            turn_payload,
+            response_id=response_id,
+            item_id=item_id,
+            status="completed",
+        )["output"][0]
+        await websocket.send_json(
+            {
+                "type": "response.output_item.done",
+                "response_id": response_id,
+                "output_index": 0,
+                "item": completed_item,
+            }
+        )
+        await websocket.send_json(
+            _completed_realtime_event(
+                session_id=turn_payload["session_id"],
+                turn_payload=turn_payload,
+                openai_shape=True,
+                response_id=response_id,
+                item_id=item_id,
+            )
+        )
 
     async def _run_realtime_voice_turn(
         *,
@@ -894,6 +1010,19 @@ def create_app(
             return
         media_path = _bytes_to_temp_file(audio_bytes, filename=event.get("filename"))
         turn_payload: dict[str, Any] | None = None
+        response_id = f"resp_{uuid.uuid4().hex}" if openai_shape else None
+        if openai_shape:
+            await websocket.send_json(
+                {
+                    "type": "response.created",
+                    "response": {
+                        "id": response_id,
+                        "object": "realtime.response",
+                        "status": "in_progress",
+                        "output": [],
+                    },
+                }
+            )
         try:
             turn_payload = _run_voice_turn(
                 session,
@@ -910,6 +1039,10 @@ def create_app(
         finally:
             media_path.unlink(missing_ok=True)
         if turn_payload is not None:
+            if openai_shape:
+                assert response_id is not None
+                await _send_openai_realtime_turn_events(websocket, turn_payload, response_id=response_id)
+                return
             await websocket.send_json(
                 _completed_realtime_event(
                     session_id=session_id,
