@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import sqlite3
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -786,6 +788,41 @@ def test_files_api_persists_lists_serves_and_deletes(tmp_path: Path) -> None:
     assert deleted == {"id": file_payload["id"], "object": "file.deleted", "deleted": True}
     missing = client.get(f"/v1/files/{file_payload['id']}")
     assert missing.status_code == 404
+
+
+def test_storage_prune_dry_run_and_preserves_referenced_files(tmp_path: Path) -> None:
+    client = make_client(tmp_path)
+    stale = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={"file": ("old.txt", b"stale content", "text/plain")},
+    ).json()
+    referenced = client.post(
+        "/v1/files",
+        data={"purpose": "assistants"},
+        files={"file": ("referenced.txt", b"referenced vector content", "text/plain")},
+    ).json()
+    store = client.post("/v1/vector_stores", json={"name": "docs"}).json()
+    client.post(f"/v1/vector_stores/{store['id']}/files", json={"file_id": referenced["id"]})
+
+    old_timestamp = int(time.time()) - 181 * 86400
+    with sqlite3.connect(tmp_path / "file-storage" / "laas.sqlite3") as con:
+        con.execute("update files set created_at = ?", (old_timestamp,))
+
+    dry_run = client.post("/v1/local/storage/prune", json={"older_than_days": 180, "dry_run": True}).json()
+    assert dry_run["dry_run"] is True
+    assert dry_run["counts"]["files"] == 1
+    assert dry_run["files"][0]["id"] == stale["id"]
+    assert client.get(f"/v1/files/{stale['id']}").status_code == 200
+
+    pruned = client.post("/v1/local/storage/prune", json={"older_than_days": 180}).json()
+    assert pruned["counts"]["files"] == 1
+    assert client.get(f"/v1/files/{stale['id']}").status_code == 404
+    assert client.get(f"/v1/files/{referenced['id']}").status_code == 200
+
+    vacuum = client.post("/v1/local/storage/vacuum")
+    assert vacuum.status_code == 200
+    assert vacuum.json()["object"] == "local.storage_vacuum"
 
 
 def test_vector_stores_attach_index_search_and_delete(tmp_path: Path) -> None:

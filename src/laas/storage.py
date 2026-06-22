@@ -59,11 +59,35 @@ class LocalStorage:
 
     def status(self) -> dict[str, Any]:
         self._ensure_initialized()
+        summary = self.usage()
         return {
             "object": "local.file_storage",
             "root": str(self.root),
             "database": str(self.db_path),
             "files_dir": str(self.files_dir),
+            "usage": summary,
+            "auto_prune": self.settings.storage_auto_prune,
+            "prune_unused_days": self.settings.storage_prune_unused_days,
+        }
+
+    def usage(self) -> dict[str, Any]:
+        self._ensure_initialized()
+        file_bytes = sum(path.stat().st_size for path in self.files_dir.glob("*") if path.is_file())
+        database_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
+        with self._connect() as con:
+            counts = {
+                "files": con.execute("select count(*) from files").fetchone()[0],
+                "vector_stores": con.execute("select count(*) from vector_stores").fetchone()[0],
+                "vector_store_files": con.execute("select count(*) from vector_store_files").fetchone()[0],
+                "vector_chunks": con.execute("select count(*) from vector_chunks").fetchone()[0],
+                "batches": con.execute("select count(*) from batches").fetchone()[0],
+                "jobs": con.execute("select count(*) from jobs").fetchone()[0],
+            }
+        return {
+            "file_bytes": file_bytes,
+            "database_bytes": database_bytes,
+            "total_bytes": file_bytes + database_bytes,
+            "counts": counts,
         }
 
     def create_file(
@@ -397,6 +421,88 @@ class LocalStorage:
             rows = con.execute("select * from jobs order by created_at desc, id desc").fetchall()
         return [_job_object(row) for row in rows]
 
+    def prune_unused(self, *, older_than_days: int | None = None, dry_run: bool = False) -> dict[str, Any]:
+        self._ensure_initialized()
+        days = older_than_days or self.settings.storage_prune_unused_days
+        cutoff = _now() - (days * 86400)
+        with self._lock:
+            with self._connect() as con:
+                file_rows = con.execute(
+                    """
+                    select f.*
+                    from files f
+                    where f.created_at < ?
+                      and not exists(select 1 from vector_store_files vsf where vsf.file_id = f.id)
+                      and not exists(
+                        select 1 from batches b
+                        where (b.input_file_id = f.id or b.output_file_id = f.id or b.error_file_id = f.id)
+                          and not (b.created_at < ? and b.status in ('completed', 'failed', 'cancelled', 'expired'))
+                      )
+                    """,
+                    (cutoff, cutoff),
+                ).fetchall()
+                batch_rows = con.execute(
+                    """
+                    select id
+                    from batches
+                    where created_at < ?
+                      and status in ('completed', 'failed', 'cancelled', 'expired')
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                job_rows = con.execute(
+                    """
+                    select id
+                    from jobs
+                    where updated_at < ?
+                      and status in ('completed', 'failed', 'cancelled', 'expired')
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                orphan_paths = [
+                    path
+                    for path in self.files_dir.glob("*")
+                    if path.is_file()
+                    and path.stat().st_mtime < cutoff
+                    and not con.execute("select 1 from files where path = ?", (str(path),)).fetchone()
+                ]
+                report = {
+                    "object": "local.storage_prune",
+                    "dry_run": dry_run,
+                    "older_than_days": days,
+                    "cutoff": cutoff,
+                    "files": [_file_object(row) for row in file_rows],
+                    "batches": [row["id"] for row in batch_rows],
+                    "jobs": [row["id"] for row in job_rows],
+                    "orphan_paths": [str(path) for path in orphan_paths],
+                }
+                report["counts"] = {
+                    "files": len(report["files"]),
+                    "batches": len(report["batches"]),
+                    "jobs": len(report["jobs"]),
+                    "orphan_paths": len(report["orphan_paths"]),
+                }
+                if dry_run:
+                    return report
+                for row in file_rows:
+                    Path(row["path"]).unlink(missing_ok=True)
+                    con.execute("delete from files where id = ?", (row["id"],))
+                for batch_id in report["batches"]:
+                    con.execute("delete from batches where id = ?", (batch_id,))
+                for job_id in report["jobs"]:
+                    con.execute("delete from jobs where id = ?", (job_id,))
+                for path in orphan_paths:
+                    path.unlink(missing_ok=True)
+                return report
+
+    def vacuum(self) -> dict[str, Any]:
+        self._ensure_initialized()
+        before = self.db_path.stat().st_size if self.db_path.exists() else 0
+        with self._connect() as con:
+            con.execute("vacuum")
+        after = self.db_path.stat().st_size if self.db_path.exists() else 0
+        return {"object": "local.storage_vacuum", "before_bytes": before, "after_bytes": after}
+
     def search_vector_store(self, *, vector_store_id: str, query: str, limit: int = 8) -> dict[str, Any]:
         if not query.strip():
             raise ValueError("query must not be empty")
@@ -602,6 +708,8 @@ class LocalStorage:
                     """
                 )
             self._initialized = True
+            if self.settings.storage_auto_prune:
+                self.prune_unused(older_than_days=self.settings.storage_prune_unused_days, dry_run=False)
 
     def _connect(self) -> sqlite3.Connection:
         self.root.mkdir(parents=True, exist_ok=True)

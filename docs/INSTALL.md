@@ -769,6 +769,8 @@ Relevant settings:
 ```powershell
 $env:LAAS_FILE_STORAGE_DIR = "D:\AI\FileStorage"
 $env:LAAS_FILE_STORAGE_DATABASE = "laas.sqlite3"
+$env:LAAS_STORAGE_AUTO_PRUNE = "true"
+$env:LAAS_STORAGE_PRUNE_UNUSED_DAYS = "180"
 $env:LAAS_VECTOR_STORE_CHUNK_TOKENS = "220"
 $env:LAAS_VECTOR_STORE_CHUNK_OVERLAP_TOKENS = "40"
 ```
@@ -847,6 +849,16 @@ Async indexing and batch work write local job records:
 
 ```bash
 curl http://127.0.0.1:8000/v1/local/jobs
+```
+
+Unused files, terminal jobs, and terminal batch records older than 180 days are
+eligible for pruning. Vector-store files and files referenced by active/recent
+batches are preserved. Review a dry run before manual pruning:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/local/storage/prune \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run":true,"older_than_days":180}'
 ```
 
 `POST /v1/moderations` is rule-backed and deterministic. It exists for local

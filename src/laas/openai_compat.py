@@ -500,6 +500,27 @@ def build_openai_router(
     def local_files_status() -> dict[str, Any]:
         return active_storage.status()
 
+    @router.get("/local/storage/status")
+    def local_storage_status() -> dict[str, Any]:
+        return active_storage.status()
+
+    @router.post("/local/storage/prune")
+    def prune_local_storage(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+        days = payload.get("older_than_days")
+        dry_run = bool(payload.get("dry_run", False))
+        if days is not None:
+            try:
+                days = int(days)
+            except (TypeError, ValueError) as exc:
+                raise openai_error(400, "older_than_days must be an integer", param="older_than_days") from exc
+            if days < 1:
+                raise openai_error(400, "older_than_days must be at least 1", param="older_than_days")
+        return active_storage.prune_unused(older_than_days=days, dry_run=dry_run)
+
+    @router.post("/local/storage/vacuum")
+    def vacuum_local_storage() -> dict[str, Any]:
+        return active_storage.vacuum()
+
     @router.post("/files")
     async def create_file(
         file: UploadFile = File(...),

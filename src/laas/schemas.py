@@ -363,6 +363,8 @@ class SettingsPatch(BaseModel):
     model_dir: str | None = None
     file_storage_dir: str | None = None
     file_storage_database: str | None = None
+    storage_auto_prune: bool | None = None
+    storage_prune_unused_days: int | None = Field(default=None, ge=1)
     vector_store_chunk_tokens: int | None = Field(default=None, gt=0)
     vector_store_chunk_overlap_tokens: int | None = Field(default=None, ge=0)
     model_id: str | None = None

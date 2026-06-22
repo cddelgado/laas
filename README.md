@@ -67,6 +67,9 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/embeddings/load`
 - `POST /v1/local/embeddings/unload`
 - `GET /v1/local/files/status`
+- `GET /v1/local/storage/status`
+- `POST /v1/local/storage/prune`
+- `POST /v1/local/storage/vacuum`
 - `POST /v1/local/vector_stores/{vector_store_id}/search`
 - `GET /v1/local/vector_stores/{vector_store_id}/indexing/status`
 - `GET /v1/local/jobs`
@@ -908,6 +911,18 @@ Async vector indexing and local batches also create records under
 deterministic local rules for compatibility, not as a replacement for hosted
 moderation classifiers.
 
+Local storage auto-prunes unused files, terminal jobs, and terminal batch
+records older than `LAAS_STORAGE_PRUNE_UNUSED_DAYS`, which defaults to `180`.
+Files referenced by vector stores or active/recent batches are preserved. Review
+with a dry run:
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri http://127.0.0.1:8000/v1/local/storage/prune `
+  -ContentType "application/json" `
+  -Body '{"dry_run":true,"older_than_days":180}'
+```
+
 ## Compatibility Testing
 
 Golden OpenAI-compatible request/response fixtures live under
@@ -940,6 +955,8 @@ Run a lightweight endpoint compatibility probe against a running server:
 ```bash
 laas compat-check --base-url http://127.0.0.1:8000
 ```
+
+Release validation is tracked in [docs/RELEASE.md](docs/RELEASE.md).
 
 Live pytest smoke tests are disabled unless the relevant environment variables
 are set: `LAAS_LIVE_SMOKE=true`, `LAAS_LIVE_SMOKE_IMAGES=true`, or

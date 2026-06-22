@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  test:
+    name: Python 3.11 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m pip install pillow
+
+      - name: Compile source and scripts
+        shell: bash
+        run: |
+          python -m py_compile \
+            src/laas/app.py \
+            src/laas/openai_compat.py \
+            src/laas/storage.py \
+            src/laas/main.py \
+            src/laas/compat_check.py \
+            scripts/openai_client_smoke.py \
+            scripts/multimodal_fidelity_smoke.py \
+            scripts/concurrency_smoke.py
+
+      - name: Run tests
+        run: python -m pytest

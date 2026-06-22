@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     model_dir: Path = Field(default_factory=default_model_dir)
     file_storage_dir: Path = Field(default_factory=default_file_storage_dir)
     file_storage_database: str = "laas.sqlite3"
+    storage_auto_prune: bool = True
+    storage_prune_unused_days: int = 180
     vector_store_chunk_tokens: int = 220
     vector_store_chunk_overlap_tokens: int = 40
     model_id: str = "gemma-4-e4b-it-q4_k_m"
@@ -176,6 +178,8 @@ class Settings(BaseSettings):
             "model_dir": str(self.model_dir),
             "file_storage_dir": str(self.file_storage_dir),
             "file_storage_database": self.file_storage_database,
+            "storage_auto_prune": self.storage_auto_prune,
+            "storage_prune_unused_days": self.storage_prune_unused_days,
             "vector_store_chunk_tokens": self.vector_store_chunk_tokens,
             "vector_store_chunk_overlap_tokens": self.vector_store_chunk_overlap_tokens,
             "model_id": self.model_id,

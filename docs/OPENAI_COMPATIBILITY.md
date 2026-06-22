@@ -23,6 +23,7 @@ Fine-tuning, Realtime, Containers, Skills, and Administration.
 | Batches | `POST /v1/batches`, `GET /v1/batches`, `GET /v1/batches/{id}`, `POST /v1/batches/{id}/cancel` | SQLite-persisted local JSONL batch runner, currently for `/v1/embeddings`. |
 | Moderations | `POST /v1/moderations` | Deterministic local rule-backed compatibility endpoint. |
 | Local Jobs | `GET /v1/local/jobs`, `GET /v1/local/jobs/{id}` | Local status records for async vector indexing and batch work. |
+| Local Storage Maintenance | `GET /v1/local/storage/status`, `POST /v1/local/storage/prune`, `POST /v1/local/storage/vacuum` | SQLite/file-storage usage, 180-day unused prune policy, and database vacuum. |
 | Images | `POST /v1/images/generations`, `POST /v1/images/variations`, `POST /v1/images/edits` | Local Diffusers generation, variation, and inpainting/edit compatibility. |
 | Audio | `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` | Local Kokoro TTS and whisper.cpp-compatible STT. |
 
