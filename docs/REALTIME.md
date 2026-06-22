@@ -75,10 +75,11 @@ WebSocket.
 | Event | Status | LAAS behavior |
 | --- | --- | --- |
 | `session.update` | Supported local compatibility subset | Updates `instructions`, `voice`, `response_format`, `language`, `prompt`, `temperature`, `speed`, and `lang`. Replies with `session.updated`. |
+| `conversation.item.create` | Supported text subset | Accepts `message` items with `system`, `user`, or `assistant` roles and text content parts. Replies with `conversation.item.created`. |
 | `input_audio_buffer.append` | Supported | Appends base64 audio bytes to the current buffer. Replies with `input_audio_buffer.appended`. |
 | `input_audio_buffer.clear` | Supported | Clears the current audio buffer. Replies with `input_audio_buffer.cleared`. |
 | `input_audio_buffer.commit` | Supported | Runs one full local voice turn from buffered audio. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
-| `response.create` | Supported as alias | Runs one full local voice turn from buffered audio. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
+| `response.create` | Supported as alias | Runs one full local voice turn from buffered audio, or from accumulated text `conversation.item.create` messages when no audio is buffered. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
 | `response.cancel` | Supported control event | Replies with `response.cancelled`. No in-flight model cancellation is attempted yet. |
 | `voice.turn` | LAAS extension | One-shot event with inline base64 audio. Replies with `response.completed`. |
 | `session.close` / `close` | Supported | Ends and removes the local session. |
@@ -106,6 +107,32 @@ After one or more appends, run the turn:
 `filename` is used only to pick a temporary file suffix for the transcription
 backend. LAAS does not currently validate container/codec at the WebSocket
 layer; the STT backend is responsible for rejecting unreadable audio.
+
+## Text Conversation Items
+
+The OpenAI-shaped route accepts text conversation items:
+
+```json
+{
+  "type": "conversation.item.create",
+  "item": {
+    "type": "message",
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "Answer this without an audio input."}
+    ]
+  }
+}
+```
+
+LAAS stores the text in the voice session's chat history and replies with
+`conversation.item.created`. A later `response.create` can run from that stored
+text even when the audio buffer is empty. In that case, Whisper is not invoked,
+but Kokoro still synthesizes the assistant text into output audio.
+
+Supported content part types are `input_text`, `text`, and `output_text`.
+`input_audio` inside `conversation.item.create` is rejected with an explicit
+error; send audio through `input_audio_buffer.append` instead.
 
 ## Output Event
 

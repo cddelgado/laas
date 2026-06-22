@@ -19,10 +19,11 @@ def main() -> int:
     parser.add_argument("--input-text", default="Say hello from the realtime smoke test.")
     parser.add_argument("--instructions", default="Answer in one short sentence.")
     parser.add_argument("--output", default="realtime-smoke-output.wav", help="Path for returned assistant audio.")
+    parser.add_argument("--text-only", action="store_true", help="Use conversation.item.create instead of input audio.")
     args = parser.parse_args()
 
     base_url = openai_base_url(args.base_url)
-    input_audio = synthesize_input_audio(base_url, args)
+    input_audio = None if args.text_only else synthesize_input_audio(base_url, args)
     session = post_json(
         base_url,
         "/realtime/sessions",
@@ -34,7 +35,7 @@ def main() -> int:
         api_key=args.api_key,
     )
     try:
-        asyncio.run(run_realtime_turn(base_url, session["id"], input_audio, Path(args.output)))
+        asyncio.run(run_realtime_turn(base_url, session["id"], input_audio, args.input_text, Path(args.output)))
     finally:
         close_session(base_url, session["id"], api_key=args.api_key)
     print(f"realtime voice smoke completed: {args.output}")
@@ -97,7 +98,13 @@ def close_session(base_url: str, session_id: str, *, api_key: str) -> None:
         pass
 
 
-async def run_realtime_turn(base_url: str, session_id: str, input_audio: bytes, output_path: Path) -> None:
+async def run_realtime_turn(
+    base_url: str,
+    session_id: str,
+    input_audio: bytes | None,
+    input_text: str,
+    output_path: Path,
+) -> None:
     try:
         import websockets
     except ImportError as exc:
@@ -115,15 +122,30 @@ async def run_realtime_turn(base_url: str, session_id: str, input_audio: bytes, 
         assert_event(created, "session.created")
         assert created["session"]["object"] == "realtime.session"
 
-        await websocket.send(
-            json.dumps(
-                {
-                    "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(input_audio).decode("ascii"),
-                }
+        if input_audio is None:
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": input_text}],
+                        },
+                    }
+                )
             )
-        )
-        assert_event(json.loads(await websocket.recv()), "input_audio_buffer.appended")
+            assert_event(json.loads(await websocket.recv()), "conversation.item.created")
+        else:
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(input_audio).decode("ascii"),
+                    }
+                )
+            )
+            assert_event(json.loads(await websocket.recv()), "input_audio_buffer.appended")
 
         await websocket.send(json.dumps({"type": "response.create", "filename": "realtime-smoke-input.wav"}))
         while True:

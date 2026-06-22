@@ -770,18 +770,36 @@ The stable LAAS realtime WebSocket transport is available at
 `/v1/local/voice/sessions/{session_id}/realtime`. An OpenAI-shaped wrapper is
 also available through `POST /v1/realtime/sessions` followed by
 `WS /v1/realtime/sessions/{session_id}`. Both routes use the same local voice
-runtime. After connecting, clients can send one of two audio shapes:
+runtime. After connecting, clients can send buffered audio:
 
 ```json
 {"type":"input_audio_buffer.append","audio":"<base64 audio bytes>"}
 {"type":"input_audio_buffer.commit","filename":"question.wav"}
 ```
 
-or a one-shot turn:
+or a one-shot local turn:
 
 ```json
 {"type":"voice.turn","audio":"<base64 audio bytes>","filename":"question.wav"}
 ```
+
+OpenAI-style text conversation items are also accepted on the
+`/v1/realtime/sessions/{session_id}` route:
+
+```json
+{
+  "type": "conversation.item.create",
+  "item": {
+    "type": "message",
+    "role": "user",
+    "content": [{"type": "input_text", "text": "Answer this without audio."}]
+  }
+}
+```
+
+After one or more text items, send `{"type":"response.create"}`. LAAS answers
+from the accumulated realtime conversation, skips Whisper because no audio was
+provided, and still synthesizes the assistant response with Kokoro.
 
 The local route replies with `response.completed` containing the same turn
 payload as the HTTP endpoint. The OpenAI-shaped route replies with a
@@ -797,12 +815,14 @@ Run a live realtime voice smoke against a server with the voice stack loaded:
 
 ```powershell
 python .\scripts\realtime_voice_smoke.py --base-url http://127.0.0.1:8000 --output .\realtime-smoke-output.wav
+python .\scripts\realtime_voice_smoke.py --base-url http://127.0.0.1:8000 --text-only --output .\realtime-text-output.wav
 ```
 
 macOS/Linux:
 
 ```bash
 python scripts/realtime_voice_smoke.py --base-url http://127.0.0.1:8000 --output realtime-smoke-output.wav
+python scripts/realtime_voice_smoke.py --base-url http://127.0.0.1:8000 --text-only --output realtime-text-output.wav
 ```
 
 Unload the full voice stack when you are done:

@@ -650,6 +650,7 @@ def create_app(
             "speed": request.speed,
             "lang": request.lang,
             "messages": messages,
+            "conversation_items": [],
             "turns": [],
         }
         app.state.voice_sessions[session_id] = session
@@ -678,26 +679,18 @@ def create_app(
         app.state.voice_sessions.pop(session_id, None)
         return _public_voice_session(session)
 
-    def _run_voice_turn(
+    def _run_voice_response(
         session: dict[str, Any],
-        media_path: Path,
         *,
+        user_message: dict[str, Any] | None = None,
+        transcript_payload: dict[str, Any] | None = None,
         response_format: str | None = None,
         voice: str | None = None,
-        language: str | None = None,
-        prompt: str | None = None,
-        temperature: float | None = None,
         speed: float | None = None,
     ) -> dict[str, Any]:
-        transcript = active_transcription_manager.transcribe(
-            media_path=media_path,
-            language=language if language is not None else session.get("language"),
-            prompt=prompt if prompt is not None else session.get("prompt"),
-            temperature=temperature if temperature is not None else session.get("temperature"),
-            translate=False,
-        )
-        user_message = {"role": "user", "content": transcript.text}
-        messages = [*session["messages"], user_message]
+        messages = [*session["messages"]]
+        if user_message is not None:
+            messages.append(user_message)
         chat_result = active_manager.backend.chat_completion(
             messages=messages,
             model=active_settings.model_id,
@@ -728,14 +721,52 @@ def create_app(
             ffmpeg_path=active_settings.tts_ffmpeg_path,
         )
 
-        session["messages"] = [*session["messages"], user_message, assistant_message]
+        next_messages = [*session["messages"]]
+        if user_message is not None:
+            next_messages.append(user_message)
+        next_messages.append(assistant_message)
+        session["messages"] = next_messages
         session["updated_at"] = int(time.time())
         turn = {
             "id": f"vturn_{uuid.uuid4().hex}",
             "object": "local.voice.turn",
             "session_id": session["id"],
             "created_at": session["updated_at"],
-            "transcript": {
+            "transcript": transcript_payload,
+            "response": {"text": assistant_text},
+            "audio": {
+                "data": base64.b64encode(audio_content).decode("ascii"),
+                "format": requested_format,
+                "media_type": media_type,
+                "sample_rate": speech.sample_rate,
+            },
+        }
+        session["turns"].append(turn)
+        return turn
+
+    def _run_voice_turn(
+        session: dict[str, Any],
+        media_path: Path,
+        *,
+        response_format: str | None = None,
+        voice: str | None = None,
+        language: str | None = None,
+        prompt: str | None = None,
+        temperature: float | None = None,
+        speed: float | None = None,
+    ) -> dict[str, Any]:
+        transcript = active_transcription_manager.transcribe(
+            media_path=media_path,
+            language=language if language is not None else session.get("language"),
+            prompt=prompt if prompt is not None else session.get("prompt"),
+            temperature=temperature if temperature is not None else session.get("temperature"),
+            translate=False,
+        )
+        user_message = {"role": "user", "content": transcript.text}
+        return _run_voice_response(
+            session,
+            user_message=user_message,
+            transcript_payload={
                 "text": transcript.text,
                 "language": transcript.language,
                 "duration": transcript.duration,
@@ -749,16 +780,10 @@ def create_app(
                     for segment in transcript.segments
                 ],
             },
-            "response": {"text": assistant_text},
-            "audio": {
-                "data": base64.b64encode(audio_content).decode("ascii"),
-                "format": requested_format,
-                "media_type": media_type,
-                "sample_rate": speech.sample_rate,
-            },
-        }
-        session["turns"].append(turn)
-        return turn
+            response_format=response_format,
+            voice=voice,
+            speed=speed,
+        )
 
     @app.post("/v1/local/voice/sessions/{session_id}/turns")
     async def create_voice_turn(
@@ -816,6 +841,7 @@ def create_app(
         if "instructions" in session_patch:
             instructions = session_patch.get("instructions")
             session["messages"] = [{"role": "system", "content": instructions}] if instructions else []
+            session["conversation_items"] = []
         for key in allowed - {"instructions"}:
             if key in session_patch:
                 session[key] = session_patch[key]
@@ -842,6 +868,55 @@ def create_app(
 
     def _public_session_for_realtime(session: dict[str, Any], *, openai_shape: bool) -> dict[str, Any]:
         return _public_openai_realtime_session(session) if openai_shape else _public_voice_session(session)
+
+    def _realtime_text_from_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            raise ValueError("conversation item content must be a string or an array")
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+                continue
+            if not isinstance(part, dict):
+                raise ValueError("conversation item content parts must be objects")
+            part_type = part.get("type")
+            if part_type in {"input_text", "text", "output_text"}:
+                parts.append(str(part.get("text") or ""))
+                continue
+            if part_type in {"input_audio", "audio"}:
+                raise ValueError("conversation.item.create audio content is not supported; use input_audio_buffer.append")
+            raise ValueError(f"unsupported conversation item content type: {part_type}")
+        return "".join(parts)
+
+    def _append_realtime_conversation_item(session: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        raw_item = event.get("item")
+        if not isinstance(raw_item, dict):
+            raise ValueError("conversation.item.create requires an item object")
+        item_type = raw_item.get("type", "message")
+        if item_type != "message":
+            raise ValueError(f"unsupported conversation item type: {item_type}")
+        role = raw_item.get("role")
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError("conversation item message role must be system, user, or assistant")
+        text = _realtime_text_from_content(raw_item.get("content", ""))
+        if not text:
+            raise ValueError("conversation item message content cannot be empty")
+        item = {
+            "id": raw_item.get("id") or f"item_{uuid.uuid4().hex}",
+            "object": "realtime.item",
+            "type": "message",
+            "role": role,
+            "content": [{"type": "text", "text": text}],
+        }
+        session["conversation_items"].append(item)
+        session["messages"].append({"role": role, "content": text})
+        session["updated_at"] = int(time.time())
+        return item
+
+    def _can_create_text_only_realtime_response(session: dict[str, Any]) -> bool:
+        return any(message.get("role") == "user" for message in session.get("messages", []))
 
     def _completed_realtime_event(
         *,
@@ -1051,6 +1126,52 @@ def create_app(
                 )
             )
 
+    async def _run_realtime_text_response(
+        *,
+        websocket: WebSocket,
+        session: dict[str, Any],
+        event: dict[str, Any],
+        openai_shape: bool,
+    ) -> None:
+        if not _can_create_text_only_realtime_response(session):
+            await websocket.send_json({"type": "error", "error": {"message": "audio buffer is empty", "code": "empty_audio"}})
+            return
+        response_id = f"resp_{uuid.uuid4().hex}" if openai_shape else None
+        if openai_shape:
+            await websocket.send_json(
+                {
+                    "type": "response.created",
+                    "response": {
+                        "id": response_id,
+                        "object": "realtime.response",
+                        "status": "in_progress",
+                        "output": [],
+                    },
+                }
+            )
+        try:
+            turn_payload = _run_voice_response(
+                session,
+                transcript_payload=None,
+                response_format=event.get("response_format"),
+                voice=event.get("voice"),
+                speed=event.get("speed"),
+            )
+        except Exception as exc:
+            await websocket.send_json({"type": "error", "error": {"message": str(exc), "code": "voice_turn_failed"}})
+            return
+        if openai_shape:
+            assert response_id is not None
+            await _send_openai_realtime_turn_events(websocket, turn_payload, response_id=response_id)
+            return
+        await websocket.send_json(
+            _completed_realtime_event(
+                session_id=session["id"],
+                turn_payload=turn_payload,
+                openai_shape=False,
+            )
+        )
+
     @app.websocket("/v1/local/voice/sessions/{session_id}/realtime")
     async def realtime_voice_session(session_id: str, websocket: WebSocket) -> None:
         await _realtime_voice_websocket(session_id=session_id, websocket=websocket, openai_shape=False)
@@ -1101,6 +1222,22 @@ def create_app(
                     audio_buffer.clear()
                     await websocket.send_json({"type": "input_audio_buffer.cleared", "session_id": session_id})
                     continue
+                if event_type == "conversation.item.create":
+                    try:
+                        item = _append_realtime_conversation_item(session, event)
+                    except ValueError as exc:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": str(exc), "code": "invalid_conversation_item"}}
+                        )
+                        continue
+                    await websocket.send_json(
+                        {
+                            "type": "conversation.item.created",
+                            "previous_item_id": event.get("previous_item_id"),
+                            "item": item,
+                        }
+                    )
+                    continue
                 if event_type == "input_audio_buffer.append":
                     try:
                         audio_buffer.extend(base64.b64decode(event.get("audio", ""), validate=True))
@@ -1132,6 +1269,14 @@ def create_app(
                     else:
                         audio_bytes = bytes(audio_buffer)
                         audio_buffer.clear()
+                    if not audio_bytes and event_type == "response.create":
+                        await _run_realtime_text_response(
+                            websocket=websocket,
+                            session=session,
+                            event=event,
+                            openai_shape=openai_shape,
+                        )
+                        continue
                     await _run_realtime_voice_turn(
                         websocket=websocket,
                         session=session,

@@ -2777,7 +2777,7 @@ def test_openai_realtime_session_endpoint_wraps_voice_stack(tmp_path: Path) -> N
         assert updated["session"]["voice"] == "af"
         assert updated["session"]["output_audio_format"] == "wav"
 
-        websocket.send_json({"type": "conversation.item.create"})
+        websocket.send_json({"type": "conversation.item.delete"})
         unsupported = websocket.receive_json()
         assert unsupported["type"] == "error"
         assert unsupported["error"]["code"] == "unsupported_event"
@@ -2854,6 +2854,100 @@ def test_openai_realtime_session_endpoint_wraps_voice_stack(tmp_path: Path) -> N
     assert audio_backend.calls[0]["voice"] == "af"
     assert transcription_backend.calls[0]["language"] == "en"
     assert client.get(f"/v1/local/voice/sessions/{session['id']}").status_code == 404
+
+
+def test_openai_realtime_conversation_item_create_text_only_response(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+    session = client.post(
+        "/v1/realtime/sessions",
+        json={"voice": "alloy", "response_format": "pcm", "instructions": "Be concise."},
+    ).json()
+
+    with client.websocket_connect(f"/v1/realtime/sessions/{session['id']}") as websocket:
+        assert websocket.receive_json()["type"] == "session.created"
+
+        websocket.send_json(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "text only realtime question"}],
+                },
+            }
+        )
+        created_item = websocket.receive_json()
+        assert created_item["type"] == "conversation.item.created"
+        assert created_item["item"]["role"] == "user"
+        assert created_item["item"]["content"][0]["text"] == "text only realtime question"
+
+        websocket.send_json({"type": "response.create"})
+        response_created = websocket.receive_json()
+        assert response_created["type"] == "response.created"
+        response_id = response_created["response"]["id"]
+
+        item_added = websocket.receive_json()
+        assert item_added["type"] == "response.output_item.added"
+        item_id = item_added["item"]["id"]
+
+        text_delta = websocket.receive_json()
+        assert text_delta["type"] == "response.output_text.delta"
+        assert text_delta["delta"] == "text only realtime question"
+
+        text_done = websocket.receive_json()
+        assert text_done["type"] == "response.output_text.done"
+        assert text_done["text"] == "text only realtime question"
+
+        audio_chunks = []
+        while True:
+            event = websocket.receive_json()
+            if event["type"] == "response.audio.delta":
+                assert event["response_id"] == response_id
+                assert event["item_id"] == item_id
+                audio_chunks.append(base64.b64decode(event["delta"]))
+                continue
+            assert event["type"] == "response.audio.done"
+            break
+
+        item_done = websocket.receive_json()
+        assert item_done["type"] == "response.output_item.done"
+        assert item_done["item"]["id"] == item_id
+
+        completed = websocket.receive_json()
+        assert completed["type"] == "response.completed"
+        assert completed["response"]["id"] == response_id
+        assert completed["laas_turn"]["transcript"] is None
+        content = completed["response"]["output"][0]["content"]
+        assert content[0]["text"] == "text only realtime question"
+        assert b"".join(audio_chunks) == base64.b64decode(content[1]["audio"])
+
+        websocket.send_json({"type": "session.close"})
+        assert websocket.receive_json()["type"] == "session.closed"
+
+    assert transcription_backend.calls == []
+    assert audio_backend.calls[0]["text"] == "text only realtime question"
+
+
+def test_openai_realtime_conversation_item_create_rejects_audio_content(tmp_path: Path) -> None:
+    client, _audio_backend, _transcription_backend = make_voice_client(tmp_path)
+    session = client.post("/v1/realtime/sessions", json={"voice": "alloy"}).json()
+
+    with client.websocket_connect(f"/v1/realtime/sessions/{session['id']}") as websocket:
+        assert websocket.receive_json()["type"] == "session.created"
+        websocket.send_json(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_audio", "audio": "abc"}],
+                },
+            }
+        )
+        error = websocket.receive_json()
+        assert error["type"] == "error"
+        assert error["error"]["code"] == "invalid_conversation_item"
+        assert "input_audio_buffer.append" in error["error"]["message"]
 
 
 def test_patch_model_directory_setting(tmp_path: Path) -> None:
