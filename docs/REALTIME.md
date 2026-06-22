@@ -1,9 +1,13 @@
 # LAAS Realtime Compatibility Design
 
-LAAS has a local realtime voice WebSocket at
-`/v1/local/voice/sessions/{session_id}/realtime`. It is not a full OpenAI
-Realtime API implementation yet. It is a compatibility-oriented bridge over the
-existing local stack:
+LAAS has two realtime voice WebSocket surfaces:
+
+- `WS /v1/local/voice/sessions/{session_id}/realtime`
+- `WS /v1/realtime/sessions/{session_id}`
+
+The second route is an OpenAI-shaped compatibility wrapper over the same local
+runtime. LAAS is not a full hosted OpenAI Realtime API implementation yet. It is
+a compatibility-oriented bridge over the existing local stack:
 
 - Whisper.cpp-compatible STT for incoming audio
 - Gemma text chat for the assistant response
@@ -24,6 +28,18 @@ Then connect:
 
 ```text
 WS /v1/local/voice/sessions/{session_id}/realtime
+```
+
+For OpenAI-shaped session and response objects, create the session through:
+
+```http
+POST /v1/realtime/sessions
+```
+
+Then connect:
+
+```text
+WS /v1/realtime/sessions/{session_id}
 ```
 
 The server immediately sends:
@@ -114,7 +130,42 @@ Successful turns reply with:
 ```
 
 The output shape is local and intentionally mirrors the HTTP voice turn payload.
-It is not yet OpenAI Realtime event parity.
+
+The OpenAI-shaped route sends the same event type with a `realtime.response`
+wrapper and keeps the full LAAS turn payload in `laas_turn`:
+
+```json
+{
+  "type": "response.completed",
+  "response": {
+    "id": "resp_...",
+    "object": "realtime.response",
+    "status": "completed",
+    "output": [
+      {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {"type": "output_text", "text": "..."},
+          {
+            "type": "output_audio",
+            "audio": "<base64 audio bytes>",
+            "format": "pcm",
+            "media_type": "audio/pcm",
+            "sample_rate": 24000
+          }
+        ]
+      }
+    ]
+  },
+  "laas_turn": {
+    "object": "local.voice.turn",
+    "transcript": {"text": "..."},
+    "response": {"text": "..."},
+    "audio": {"data": "<base64 audio bytes>"}
+  }
+}
+```
 
 ## Error Events
 
@@ -144,7 +195,6 @@ The following are intentionally out of scope for the current local bridge:
 
 - WebRTC transport
 - Hosted ephemeral token/session APIs
-- OpenAI Realtime `/v1/realtime` endpoint parity
 - Full `conversation.item.*` event graph
 - Server-side VAD
 - Audio delta streaming
@@ -152,13 +202,15 @@ The following are intentionally out of scope for the current local bridge:
 - Tool calls over Realtime
 - Model-side interruption or cancellation
 
-## Proposed Implementation Follow-Up
+## Remaining Follow-Up
 
-Issue #18 tracks the design. The next implementation issue should cover:
+Issue #18 tracks the design and issue #19 tracks the first OpenAI-shaped
+session wrapper. Remaining compatibility work should cover:
 
-- Add an OpenAI-shaped `/v1/realtime` or `/v1/realtime/sessions` endpoint.
-- Translate OpenAI Realtime event names to the local voice session runtime.
-- Return explicit unsupported-event errors for unimplemented OpenAI events.
+- Expand `conversation.item.*` event translation beyond explicit unsupported
+  errors.
 - Add SDK/client smoke coverage for the supported subset.
+- Add audio delta streaming when the local TTS backend can stream chunks.
+- Add server-side VAD when a local VAD dependency is selected.
 - Keep `/v1/local/voice/sessions/{session_id}/realtime` as the stable local
   transport.

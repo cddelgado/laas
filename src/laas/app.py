@@ -604,8 +604,7 @@ def create_app(
             is_loaded=False,
         ).model_dump()
 
-    @app.post("/v1/local/voice/sessions")
-    def create_voice_session(request: CreateVoiceSessionRequest) -> dict[str, Any]:
+    def _create_voice_session_record(request: CreateVoiceSessionRequest) -> dict[str, Any]:
         if request.model and request.model != active_settings.model_id:
             raise openai_error(
                 404,
@@ -654,7 +653,17 @@ def create_app(
             "turns": [],
         }
         app.state.voice_sessions[session_id] = session
+        return session
+
+    @app.post("/v1/local/voice/sessions")
+    def create_voice_session(request: CreateVoiceSessionRequest) -> dict[str, Any]:
+        session = _create_voice_session_record(request)
         return _public_voice_session(session)
+
+    @app.post("/v1/realtime/sessions")
+    def create_realtime_session(request: CreateVoiceSessionRequest) -> dict[str, Any]:
+        session = _create_voice_session_record(request)
+        return _public_openai_realtime_session(session)
 
     @app.get("/v1/local/voice/sessions/{session_id}")
     def get_voice_session(session_id: str) -> dict[str, Any]:
@@ -813,6 +822,64 @@ def create_app(
         session["updated_at"] = int(time.time())
         return _public_voice_session(session)
 
+    def _public_openai_realtime_session(session: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": session["id"],
+            "object": "realtime.session",
+            "created_at": session["created_at"],
+            "updated_at": session["updated_at"],
+            "status": session["status"],
+            "model": session["model"],
+            "modalities": ["audio", "text"],
+            "instructions": session["messages"][0]["content"] if session["messages"] else None,
+            "voice": session["voice"],
+            "input_audio_format": "wav",
+            "output_audio_format": session["response_format"],
+            "temperature": session["temperature"],
+            "turn_detection": None,
+            "tools": [],
+        }
+
+    def _public_session_for_realtime(session: dict[str, Any], *, openai_shape: bool) -> dict[str, Any]:
+        return _public_openai_realtime_session(session) if openai_shape else _public_voice_session(session)
+
+    def _completed_realtime_event(
+        *,
+        session_id: str,
+        turn_payload: dict[str, Any],
+        openai_shape: bool,
+    ) -> dict[str, Any]:
+        if not openai_shape:
+            return {"type": "response.completed", "session_id": session_id, "turn": turn_payload}
+        response_id = f"resp_{uuid.uuid4().hex}"
+        return {
+            "type": "response.completed",
+            "response": {
+                "id": response_id,
+                "object": "realtime.response",
+                "status": "completed",
+                "output": [
+                    {
+                        "id": f"item_{uuid.uuid4().hex}",
+                        "object": "realtime.item",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": turn_payload["response"]["text"]},
+                            {
+                                "type": "output_audio",
+                                "audio": turn_payload["audio"]["data"],
+                                "format": turn_payload["audio"]["format"],
+                                "media_type": turn_payload["audio"]["media_type"],
+                                "sample_rate": turn_payload["audio"]["sample_rate"],
+                            },
+                        ],
+                    }
+                ],
+            },
+            "laas_turn": turn_payload,
+        }
+
     async def _run_realtime_voice_turn(
         *,
         websocket: WebSocket,
@@ -820,6 +887,7 @@ def create_app(
         session_id: str,
         audio_bytes: bytes,
         event: dict[str, Any],
+        openai_shape: bool = False,
     ) -> None:
         if not audio_bytes:
             await websocket.send_json({"type": "error", "error": {"message": "audio buffer is empty", "code": "empty_audio"}})
@@ -842,10 +910,23 @@ def create_app(
         finally:
             media_path.unlink(missing_ok=True)
         if turn_payload is not None:
-            await websocket.send_json({"type": "response.completed", "session_id": session_id, "turn": turn_payload})
+            await websocket.send_json(
+                _completed_realtime_event(
+                    session_id=session_id,
+                    turn_payload=turn_payload,
+                    openai_shape=openai_shape,
+                )
+            )
 
     @app.websocket("/v1/local/voice/sessions/{session_id}/realtime")
     async def realtime_voice_session(session_id: str, websocket: WebSocket) -> None:
+        await _realtime_voice_websocket(session_id=session_id, websocket=websocket, openai_shape=False)
+
+    @app.websocket("/v1/realtime/sessions/{session_id}")
+    async def openai_realtime_session(session_id: str, websocket: WebSocket) -> None:
+        await _realtime_voice_websocket(session_id=session_id, websocket=websocket, openai_shape=True)
+
+    async def _realtime_voice_websocket(session_id: str, websocket: WebSocket, *, openai_shape: bool) -> None:
         await websocket.accept()
         session = app.state.voice_sessions.get(session_id)
         if not session:
@@ -859,20 +940,25 @@ def create_app(
             return
 
         audio_buffer = bytearray()
-        await websocket.send_json({"type": "session.created", "session": _public_voice_session(session)})
+        await websocket.send_json(
+            {"type": "session.created", "session": _public_session_for_realtime(session, openai_shape=openai_shape)}
+        )
         try:
             while True:
                 event = await websocket.receive_json()
                 event_type = event.get("type")
                 if event_type == "session.update":
-                    session_payload = _update_voice_session_from_realtime_event(session, event)
+                    _update_voice_session_from_realtime_event(session, event)
+                    session_payload = _public_session_for_realtime(session, openai_shape=openai_shape)
                     await websocket.send_json({"type": "session.updated", "session": session_payload})
                     continue
                 if event_type in {"session.close", "close"}:
                     session["status"] = "ended"
                     session["updated_at"] = int(time.time())
                     app.state.voice_sessions.pop(session_id, None)
-                    await websocket.send_json({"type": "session.closed", "session": _public_voice_session(session)})
+                    await websocket.send_json(
+                        {"type": "session.closed", "session": _public_session_for_realtime(session, openai_shape=openai_shape)}
+                    )
                     await websocket.close()
                     return
                 if event_type == "response.cancel":
@@ -919,6 +1005,7 @@ def create_app(
                         session_id=session_id,
                         audio_bytes=audio_bytes,
                         event=event,
+                        openai_shape=openai_shape,
                     )
                     continue
 

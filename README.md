@@ -37,6 +37,7 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/images/variations`
 - `POST /v1/images/edits`
 - `POST /v1/audio/speech`
+- `POST /v1/realtime/sessions`
 - `GET /v1/local/settings`
 - `PATCH /v1/local/settings`
 - `GET /v1/local/diagnostics`
@@ -83,6 +84,7 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `DELETE /v1/local/voice/sessions/{session_id}`
 - `POST /v1/local/voice/sessions/{session_id}/turns`
 - `WS /v1/local/voice/sessions/{session_id}/realtime`
+- `WS /v1/realtime/sessions/{session_id}`
 - `GET /v1/local/capabilities`
 - `GET /v1/local/concurrency/status`
 
@@ -764,9 +766,11 @@ Path("answer.wav").write_bytes(base64.b64decode(payload["audio"]["data"]))
 requests.delete(f"{base_url}/v1/local/voice/sessions/{session_id}").raise_for_status()
 ```
 
-The realtime WebSocket transport is available at
-`/v1/local/voice/sessions/{session_id}/realtime`. After connecting, clients can
-send one of two audio shapes:
+The stable LAAS realtime WebSocket transport is available at
+`/v1/local/voice/sessions/{session_id}/realtime`. An OpenAI-shaped wrapper is
+also available through `POST /v1/realtime/sessions` followed by
+`WS /v1/realtime/sessions/{session_id}`. Both routes use the same local voice
+runtime. After connecting, clients can send one of two audio shapes:
 
 ```json
 {"type":"input_audio_buffer.append","audio":"<base64 audio bytes>"}
@@ -779,8 +783,10 @@ or a one-shot turn:
 {"type":"voice.turn","audio":"<base64 audio bytes>","filename":"question.wav"}
 ```
 
-The server replies with `response.completed` containing the same turn payload as
-the HTTP endpoint. It also accepts `input_audio_buffer.clear`,
+The local route replies with `response.completed` containing the same turn
+payload as the HTTP endpoint. The OpenAI-shaped route replies with a
+`realtime.response` object and includes the full local payload under
+`laas_turn`. Both routes accept `session.update`, `input_audio_buffer.clear`,
 `response.cancel`, and `session.close` control events.
 
 Unload the full voice stack when you are done:

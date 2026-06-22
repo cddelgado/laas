@@ -2749,6 +2749,71 @@ def test_voice_session_realtime_session_update_and_response_create(tmp_path: Pat
     assert transcription_backend.calls[0]["language"] == "en"
 
 
+def test_openai_realtime_session_endpoint_wraps_voice_stack(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+    created = client.post(
+        "/v1/realtime/sessions",
+        json={"voice": "alloy", "response_format": "pcm", "instructions": "Be concise."},
+    )
+    assert created.status_code == 200
+    session = created.json()
+    assert session["object"] == "realtime.session"
+    assert session["modalities"] == ["audio", "text"]
+    assert session["instructions"] == "Be concise."
+
+    with client.websocket_connect(f"/v1/realtime/sessions/{session['id']}") as websocket:
+        created_event = websocket.receive_json()
+        assert created_event["type"] == "session.created"
+        assert created_event["session"]["object"] == "realtime.session"
+
+        websocket.send_json(
+            {
+                "type": "session.update",
+                "session": {"voice": "af", "response_format": "wav", "language": "en"},
+            }
+        )
+        updated = websocket.receive_json()
+        assert updated["type"] == "session.updated"
+        assert updated["session"]["voice"] == "af"
+        assert updated["session"]["output_audio_format"] == "wav"
+
+        websocket.send_json({"type": "conversation.item.create"})
+        unsupported = websocket.receive_json()
+        assert unsupported["type"] == "error"
+        assert unsupported["error"]["code"] == "unsupported_event"
+
+        websocket.send_json(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(b"fake audio bytes").decode("ascii"),
+            }
+        )
+        assert websocket.receive_json()["type"] == "input_audio_buffer.appended"
+
+        websocket.send_json({"type": "response.create", "filename": "sample.wav"})
+        completed = websocket.receive_json()
+        assert completed["type"] == "response.completed"
+        assert completed["response"]["object"] == "realtime.response"
+        assert completed["response"]["status"] == "completed"
+        content = completed["response"]["output"][0]["content"]
+        assert content[0]["type"] == "output_text"
+        assert content[1]["type"] == "output_audio"
+        assert content[1]["format"] == "wav"
+        assert completed["laas_turn"]["transcript"]["language"] == "en"
+
+        websocket.send_json({"type": "response.cancel"})
+        assert websocket.receive_json()["type"] == "response.cancelled"
+
+        websocket.send_json({"type": "session.close"})
+        closed = websocket.receive_json()
+        assert closed["type"] == "session.closed"
+        assert closed["session"]["object"] == "realtime.session"
+
+    assert audio_backend.calls[0]["voice"] == "af"
+    assert transcription_backend.calls[0]["language"] == "en"
+    assert client.get(f"/v1/local/voice/sessions/{session['id']}").status_code == 404
+
+
 def test_patch_model_directory_setting(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     target = tmp_path / "models"

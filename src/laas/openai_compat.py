@@ -68,6 +68,16 @@ COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
         "notes": "Local Kokoro TTS and whisper.cpp-compatible transcription/translation stack.",
     },
     {
+        "surface": "Local Voice Realtime",
+        "status": "supported",
+        "endpoints": [
+            "POST /v1/realtime/sessions",
+            "WS /v1/realtime/sessions/{session_id}",
+            "WS /v1/local/voice/sessions/{session_id}/realtime",
+        ],
+        "notes": "OpenAI-shaped local realtime wrapper plus stable LAAS local voice transport over Kokoro, Whisper, and Gemma.",
+    },
+    {
         "surface": "Files",
         "status": "supported",
         "endpoints": [
@@ -122,10 +132,10 @@ COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
         "notes": "These cloud/account or hosted-storage APIs are not implemented by the local inference host.",
     },
     {
-        "surface": "Administration, Containers, Skills, ChatKit, Realtime",
+        "surface": "Administration, Containers, Skills, ChatKit, Hosted Realtime",
         "status": "not_applicable",
         "endpoints": [],
-        "notes": "Not registered. These require OpenAI-hosted account, organization, realtime, or cloud resources.",
+        "notes": "Not registered. These require OpenAI-hosted account, organization, realtime relay, or cloud resources.",
     },
 ]
 
