@@ -16,17 +16,32 @@ def run_compat_check(base_url: str, *, timeout: float = 10.0) -> dict[str, Any]:
         ("vector_stores.list", "GET", "/v1/vector_stores", None, 200),
         ("batches.list", "GET", "/v1/batches", None, 200),
         ("moderations.create", "POST", "/v1/moderations", {"input": "hello"}, 200),
+        (
+            "realtime.sessions.create",
+            "POST",
+            "/v1/realtime/sessions",
+            {"voice": "alloy", "response_format": "pcm"},
+            [200, 409, 503],
+        ),
     ]
     results = []
     for name, method, path, body, expected_status in probes:
         status, payload = _request(base + path, method=method, body=body, timeout=timeout)
+        if name == "realtime.sessions.create" and status == 200 and isinstance(payload, dict) and payload.get("id"):
+            _request(
+                base + f"/v1/local/voice/sessions/{payload['id']}",
+                method="DELETE",
+                body=None,
+                timeout=timeout,
+            )
+        expected_statuses = expected_status if isinstance(expected_status, list) else [expected_status]
         results.append(
             {
                 "name": name,
                 "method": method,
                 "path": path,
                 "status_code": status,
-                "ok": status == expected_status,
+                "ok": status in expected_statuses,
                 "expected_status": expected_status,
                 "error": payload if status >= 400 else None,
             }

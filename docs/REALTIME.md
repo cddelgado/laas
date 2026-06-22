@@ -76,6 +76,9 @@ WebSocket.
 | --- | --- | --- |
 | `session.update` | Supported local compatibility subset | Updates `instructions`, `voice`, `response_format`, `language`, `prompt`, `temperature`, `speed`, and `lang`. Replies with `session.updated`. |
 | `conversation.item.create` | Supported text subset | Accepts `message` items with `system`, `user`, or `assistant` roles and text content parts. Replies with `conversation.item.created`. |
+| `conversation.item.retrieve` | Supported text subset | Returns a stored text conversation item by `item_id`. |
+| `conversation.item.delete` | Supported text subset | Removes a stored text conversation item from the visible item list and backend chat history. |
+| `conversation.item.truncate` | Supported text subset | Truncates a stored text content part by `text_end_index`, replaces it with `text`, or acknowledges `audio_end_ms` as a no-op for text items. |
 | `input_audio_buffer.append` | Supported | Appends base64 audio bytes to the current buffer. Replies with `input_audio_buffer.appended`. |
 | `input_audio_buffer.clear` | Supported | Clears the current audio buffer. Replies with `input_audio_buffer.cleared`. |
 | `input_audio_buffer.commit` | Supported | Runs one full local voice turn from buffered audio. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
@@ -133,6 +136,30 @@ but Kokoro still synthesizes the assistant text into output audio.
 Supported content part types are `input_text`, `text`, and `output_text`.
 `input_audio` inside `conversation.item.create` is rejected with an explicit
 error; send audio through `input_audio_buffer.append` instead.
+
+Stored text items can be read, removed, or truncated:
+
+```json
+{"type": "conversation.item.retrieve", "item_id": "item_..."}
+{"type": "conversation.item.delete", "item_id": "item_..."}
+{"type": "conversation.item.truncate", "item_id": "item_...", "content_index": 0, "text_end_index": 12}
+```
+
+Deleting an item removes it from the backend chat history used by later
+`response.create` calls. Truncating a text item updates the backend chat history
+to the truncated text.
+
+## Session Configuration
+
+`POST /v1/realtime/sessions` and `session.update` accept the practical local
+subset of OpenAI-shaped session fields:
+
+- `modalities`: `["audio", "text"]`, `["audio"]`, or `["text"]`
+- `input_audio_format`: `pcm`, `wav`, `mp3`, `flac`, `opus`, or `aac`
+- `output_audio_format` / `response_format`: `pcm`, `wav`, `mp3`, `flac`,
+  `opus`, or `aac`
+- `turn_detection`: stored and returned for client compatibility, but local
+  server-side VAD is not implemented yet
 
 ## Output Event
 
@@ -240,7 +267,6 @@ The following are intentionally out of scope for the current local bridge:
 
 - WebRTC transport
 - Hosted ephemeral token/session APIs
-- Full `conversation.item.*` event graph
 - Server-side VAD
 - Native chunk-by-chunk TTS generation before the local TTS backend returns
 - Native LLM audio input/output
@@ -252,8 +278,7 @@ The following are intentionally out of scope for the current local bridge:
 Issue #18 tracks the design and issue #19 tracks the first OpenAI-shaped
 session wrapper. Remaining compatibility work should cover:
 
-- Expand `conversation.item.*` event translation beyond explicit unsupported
-  errors.
+- Expand binary/audio conversation item support beyond text item controls.
 - Add SDK/client smoke coverage for the supported subset.
 - Add audio delta streaming when the local TTS backend can stream chunks.
 - Add server-side VAD when a local VAD dependency is selected.

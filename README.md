@@ -800,6 +800,14 @@ OpenAI-style text conversation items are also accepted on the
 After one or more text items, send `{"type":"response.create"}`. LAAS answers
 from the accumulated realtime conversation, skips Whisper because no audio was
 provided, and still synthesizes the assistant response with Kokoro.
+The OpenAI-shaped realtime route also supports practical text item controls:
+`conversation.item.retrieve`, `conversation.item.delete`, and
+`conversation.item.truncate`.
+
+`POST /v1/realtime/sessions` and `session.update` accept local-compatible
+`modalities`, `input_audio_format`, `output_audio_format`, `response_format`,
+and `turn_detection` fields. `turn_detection` is stored and returned for client
+compatibility; local server-side VAD is not implemented yet.
 
 The local route replies with `response.completed` containing the same turn
 payload as the HTTP endpoint. The OpenAI-shaped route replies with a
@@ -1001,6 +1009,10 @@ Run a lightweight endpoint compatibility probe against a running server:
 ```bash
 laas compat-check --base-url http://127.0.0.1:8000
 ```
+
+The compatibility probe includes `POST /v1/realtime/sessions`. On a fresh
+install, missing local voice assets still count as a predictable registered
+route response.
 
 Release validation is tracked in [docs/RELEASE.md](docs/RELEASE.md).
 

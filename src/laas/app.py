@@ -635,6 +635,13 @@ def create_app(
         messages = []
         if request.instructions:
             messages.append({"role": "system", "content": request.instructions})
+        extra = request.model_extra or {}
+        modalities = _normalize_realtime_modalities(extra.get("modalities"))
+        input_audio_format = _normalize_realtime_audio_format(extra.get("input_audio_format"), default="wav")
+        output_audio_format = _normalize_realtime_audio_format(
+            extra.get("output_audio_format"),
+            default=request.response_format,
+        )
         session = {
             "id": session_id,
             "object": "local.voice.session",
@@ -643,7 +650,11 @@ def create_app(
             "status": "active",
             "model": active_settings.model_id,
             "voice": request.voice,
-            "response_format": request.response_format,
+            "response_format": output_audio_format,
+            "modalities": modalities,
+            "input_audio_format": input_audio_format,
+            "output_audio_format": output_audio_format,
+            "turn_detection": extra.get("turn_detection"),
             "language": request.language,
             "prompt": request.prompt,
             "temperature": request.temperature,
@@ -651,6 +662,9 @@ def create_app(
             "lang": request.lang,
             "messages": messages,
             "conversation_items": [],
+            "active_response_id": None,
+            "last_response_id": None,
+            "cancelled_response_ids": [],
             "turns": [],
         }
         app.state.voice_sessions[session_id] = session
@@ -679,6 +693,32 @@ def create_app(
         app.state.voice_sessions.pop(session_id, None)
         return _public_voice_session(session)
 
+    def _normalize_realtime_modalities(value: Any) -> list[str]:
+        if value is None:
+            return ["audio", "text"]
+        if not isinstance(value, list) or not value:
+            raise openai_error(400, "modalities must be a non-empty array", param="modalities")
+        normalized = []
+        for modality in value:
+            if modality not in {"audio", "text"}:
+                raise openai_error(400, f"unsupported realtime modality: {modality}", param="modalities")
+            if modality not in normalized:
+                normalized.append(modality)
+        return normalized
+
+    def _normalize_realtime_audio_format(value: Any, *, default: str) -> str:
+        if value is None:
+            return default
+        if value not in {"pcm", "wav", "mp3", "flac", "opus", "aac"}:
+            raise openai_error(400, f"unsupported realtime audio format: {value}", param="audio_format")
+        return str(value)
+
+    def _backend_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {key: value for key, value in message.items() if key != "item_id"}
+            for message in messages
+        ]
+
     def _run_voice_response(
         session: dict[str, Any],
         *,
@@ -692,7 +732,7 @@ def create_app(
         if user_message is not None:
             messages.append(user_message)
         chat_result = active_manager.backend.chat_completion(
-            messages=messages,
+            messages=_backend_messages(messages),
             model=active_settings.model_id,
             tools=None,
             tool_choice="none",
@@ -828,23 +868,37 @@ def create_app(
 
     def _update_voice_session_from_realtime_event(session: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         session_patch = event.get("session") if isinstance(event.get("session"), dict) else event
-        allowed = {
+        allowed = [
             "instructions",
             "voice",
             "response_format",
+            "output_audio_format",
+            "input_audio_format",
+            "modalities",
+            "turn_detection",
             "language",
             "prompt",
             "temperature",
             "speed",
             "lang",
-        }
+        ]
         if "instructions" in session_patch:
             instructions = session_patch.get("instructions")
             session["messages"] = [{"role": "system", "content": instructions}] if instructions else []
             session["conversation_items"] = []
-        for key in allowed - {"instructions"}:
+        for key in [field for field in allowed if field != "instructions"]:
             if key in session_patch:
-                session[key] = session_patch[key]
+                if key == "modalities":
+                    session[key] = _normalize_realtime_modalities(session_patch[key])
+                elif key in {"input_audio_format", "output_audio_format"}:
+                    session[key] = _normalize_realtime_audio_format(session_patch[key], default="wav")
+                    if key == "output_audio_format":
+                        session["response_format"] = session[key]
+                elif key == "response_format":
+                    session[key] = _normalize_realtime_audio_format(session_patch[key], default="pcm")
+                    session["output_audio_format"] = session[key]
+                else:
+                    session[key] = session_patch[key]
         session["updated_at"] = int(time.time())
         return _public_voice_session(session)
 
@@ -856,13 +910,13 @@ def create_app(
             "updated_at": session["updated_at"],
             "status": session["status"],
             "model": session["model"],
-            "modalities": ["audio", "text"],
+            "modalities": session.get("modalities", ["audio", "text"]),
             "instructions": session["messages"][0]["content"] if session["messages"] else None,
             "voice": session["voice"],
-            "input_audio_format": "wav",
-            "output_audio_format": session["response_format"],
+            "input_audio_format": session.get("input_audio_format", "wav"),
+            "output_audio_format": session.get("output_audio_format", session["response_format"]),
             "temperature": session["temperature"],
-            "turn_detection": None,
+            "turn_detection": session.get("turn_detection"),
             "tools": [],
         }
 
@@ -882,13 +936,36 @@ def create_app(
             if not isinstance(part, dict):
                 raise ValueError("conversation item content parts must be objects")
             part_type = part.get("type")
-            if part_type in {"input_text", "text", "output_text"}:
-                parts.append(str(part.get("text") or ""))
+            if part_type in {"input_text", "text", "output_text", "input_text_delta", "response.output_text"}:
+                parts.append(str(part.get("text") or part.get("delta") or ""))
+                continue
+            if part_type in {None, "message"} and "content" in part:
+                parts.append(_realtime_text_from_content(part.get("content")))
                 continue
             if part_type in {"input_audio", "audio"}:
                 raise ValueError("conversation.item.create audio content is not supported; use input_audio_buffer.append")
             raise ValueError(f"unsupported conversation item content type: {part_type}")
         return "".join(parts)
+
+    def _realtime_item_id_from_event(event: dict[str, Any]) -> str:
+        item_id = event.get("item_id")
+        if not item_id and isinstance(event.get("item"), dict):
+            item_id = event["item"].get("id")
+        if not item_id:
+            raise ValueError("event requires item_id")
+        return str(item_id)
+
+    def _find_realtime_conversation_item(session: dict[str, Any], item_id: str) -> dict[str, Any] | None:
+        return next((item for item in session["conversation_items"] if item.get("id") == item_id), None)
+
+    def _remove_message_for_realtime_item(session: dict[str, Any], item_id: str) -> None:
+        session["messages"] = [message for message in session["messages"] if message.get("item_id") != item_id]
+
+    def _replace_message_for_realtime_item(session: dict[str, Any], item_id: str, text: str) -> None:
+        for message in session["messages"]:
+            if message.get("item_id") == item_id:
+                message["content"] = text
+                return
 
     def _append_realtime_conversation_item(session: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         raw_item = event.get("item")
@@ -903,15 +980,59 @@ def create_app(
         text = _realtime_text_from_content(raw_item.get("content", ""))
         if not text:
             raise ValueError("conversation item message content cannot be empty")
+        item_id = str(raw_item.get("id") or f"item_{uuid.uuid4().hex}")
         item = {
-            "id": raw_item.get("id") or f"item_{uuid.uuid4().hex}",
+            "id": item_id,
             "object": "realtime.item",
             "type": "message",
             "role": role,
             "content": [{"type": "text", "text": text}],
         }
         session["conversation_items"].append(item)
-        session["messages"].append({"role": role, "content": text})
+        session["messages"].append({"role": role, "content": text, "item_id": item_id})
+        session["updated_at"] = int(time.time())
+        return item
+
+    def _retrieve_realtime_conversation_item(session: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        item_id = _realtime_item_id_from_event(event)
+        item = _find_realtime_conversation_item(session, item_id)
+        if item is None:
+            raise LookupError(f"conversation item '{item_id}' does not exist")
+        return item
+
+    def _delete_realtime_conversation_item(session: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        item_id = _realtime_item_id_from_event(event)
+        item = _find_realtime_conversation_item(session, item_id)
+        if item is None:
+            raise LookupError(f"conversation item '{item_id}' does not exist")
+        session["conversation_items"] = [existing for existing in session["conversation_items"] if existing.get("id") != item_id]
+        _remove_message_for_realtime_item(session, item_id)
+        session["updated_at"] = int(time.time())
+        return item
+
+    def _truncate_realtime_conversation_item(session: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        item_id = _realtime_item_id_from_event(event)
+        item = _find_realtime_conversation_item(session, item_id)
+        if item is None:
+            raise LookupError(f"conversation item '{item_id}' does not exist")
+        content = item.get("content") or []
+        content_index = int(event.get("content_index", 0) or 0)
+        if content_index < 0 or content_index >= len(content):
+            raise ValueError("content_index is out of range")
+        part = content[content_index]
+        if not isinstance(part, dict):
+            raise ValueError("conversation item content part is invalid")
+        if part.get("type") in {"text", "input_text", "output_text"}:
+            if "text" in event:
+                new_text = str(event.get("text") or "")
+            elif "text_end_index" in event:
+                new_text = str(part.get("text") or "")[: max(0, int(event.get("text_end_index") or 0))]
+            elif "audio_end_ms" in event:
+                new_text = str(part.get("text") or "")
+            else:
+                new_text = ""
+            part["text"] = new_text
+            _replace_message_for_realtime_item(session, item_id, new_text)
         session["updated_at"] = int(time.time())
         return item
 
@@ -1086,6 +1207,9 @@ def create_app(
         media_path = _bytes_to_temp_file(audio_bytes, filename=event.get("filename"))
         turn_payload: dict[str, Any] | None = None
         response_id = f"resp_{uuid.uuid4().hex}" if openai_shape else None
+        if response_id:
+            session["active_response_id"] = response_id
+            session["last_response_id"] = response_id
         if openai_shape:
             await websocket.send_json(
                 {
@@ -1117,6 +1241,7 @@ def create_app(
             if openai_shape:
                 assert response_id is not None
                 await _send_openai_realtime_turn_events(websocket, turn_payload, response_id=response_id)
+                session["active_response_id"] = None
                 return
             await websocket.send_json(
                 _completed_realtime_event(
@@ -1137,6 +1262,9 @@ def create_app(
             await websocket.send_json({"type": "error", "error": {"message": "audio buffer is empty", "code": "empty_audio"}})
             return
         response_id = f"resp_{uuid.uuid4().hex}" if openai_shape else None
+        if response_id:
+            session["active_response_id"] = response_id
+            session["last_response_id"] = response_id
         if openai_shape:
             await websocket.send_json(
                 {
@@ -1163,6 +1291,7 @@ def create_app(
         if openai_shape:
             assert response_id is not None
             await _send_openai_realtime_turn_events(websocket, turn_payload, response_id=response_id)
+            session["active_response_id"] = None
             return
         await websocket.send_json(
             _completed_realtime_event(
@@ -1216,7 +1345,17 @@ def create_app(
                     await websocket.close()
                     return
                 if event_type == "response.cancel":
-                    await websocket.send_json({"type": "response.cancelled", "session_id": session_id})
+                    response_id = event.get("response_id") or session.get("active_response_id") or session.get("last_response_id")
+                    if response_id:
+                        session["cancelled_response_ids"].append(response_id)
+                    await websocket.send_json(
+                        {
+                            "type": "response.cancelled",
+                            "session_id": session_id,
+                            "response_id": response_id,
+                            "status": "cancelled" if response_id else "no_active_response",
+                        }
+                    )
                     continue
                 if event_type == "input_audio_buffer.clear":
                     audio_buffer.clear()
@@ -1237,6 +1376,43 @@ def create_app(
                             "item": item,
                         }
                     )
+                    continue
+                if event_type == "conversation.item.retrieve":
+                    try:
+                        item = _retrieve_realtime_conversation_item(session, event)
+                    except (LookupError, ValueError) as exc:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": str(exc), "code": "item_not_found"}}
+                        )
+                        continue
+                    await websocket.send_json({"type": "conversation.item.retrieved", "item": item})
+                    continue
+                if event_type == "conversation.item.delete":
+                    try:
+                        item = _delete_realtime_conversation_item(session, event)
+                    except (LookupError, ValueError) as exc:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": str(exc), "code": "item_not_found"}}
+                        )
+                        continue
+                    await websocket.send_json(
+                        {"type": "conversation.item.deleted", "item_id": item["id"], "item": item}
+                    )
+                    continue
+                if event_type == "conversation.item.truncate":
+                    try:
+                        item = _truncate_realtime_conversation_item(session, event)
+                    except LookupError as exc:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": str(exc), "code": "item_not_found"}}
+                        )
+                        continue
+                    except ValueError as exc:
+                        await websocket.send_json(
+                            {"type": "error", "error": {"message": str(exc), "code": "invalid_conversation_item"}}
+                        )
+                        continue
+                    await websocket.send_json({"type": "conversation.item.truncated", "item": item})
                     continue
                 if event_type == "input_audio_buffer.append":
                     try:

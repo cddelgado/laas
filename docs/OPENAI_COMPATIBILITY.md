@@ -26,7 +26,7 @@ Fine-tuning, Realtime, Containers, Skills, and Administration.
 | Local Storage Maintenance | `GET /v1/local/storage/status`, `POST /v1/local/storage/prune`, `POST /v1/local/storage/vacuum` | SQLite/file-storage usage, 180-day unused prune policy, and database vacuum. |
 | Images | `POST /v1/images/generations`, `POST /v1/images/variations`, `POST /v1/images/edits` | Local Diffusers generation, variation, and inpainting/edit compatibility. |
 | Audio | `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` | Local Kokoro TTS and whisper.cpp-compatible STT. |
-| Local Voice Realtime | `POST /v1/realtime/sessions`, `WS /v1/realtime/sessions/{session_id}`, `WS /v1/local/voice/sessions/{session_id}/realtime` | OpenAI-shaped local realtime wrapper plus the stable LAAS local transport over Kokoro, Whisper, and Gemma. See [REALTIME.md](REALTIME.md). |
+| Local Voice Realtime | `POST /v1/realtime/sessions`, `WS /v1/realtime/sessions/{session_id}`, `WS /v1/local/voice/sessions/{session_id}/realtime` | OpenAI-shaped local realtime wrapper plus the stable LAAS local transport over Kokoro, Whisper, and Gemma. Supports text `conversation.item.create/retrieve/delete/truncate`, session config round-tripping, and chunked response events. See [REALTIME.md](REALTIME.md). |
 
 ## Multimodal Notes
 

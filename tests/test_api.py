@@ -1017,8 +1017,11 @@ def test_moderations_rule_endpoint(tmp_path: Path) -> None:
 def test_compat_check_report(monkeypatch) -> None:
     import laas.compat_check as compat_check
 
+    calls = []
+
     def fake_request(url: str, *, method: str, body: dict | None, timeout: float):
         assert url.startswith("http://testserver")
+        calls.append((method, url, body))
         return 200, {"ok": True}
 
     monkeypatch.setattr(compat_check, "_request", fake_request)
@@ -1027,6 +1030,8 @@ def test_compat_check_report(monkeypatch) -> None:
     assert report["object"] == "local.compat_check"
     assert report["ok"] is True
     assert any(item["name"] == "moderations.create" for item in report["results"])
+    assert any(item["name"] == "realtime.sessions.create" for item in report["results"])
+    assert any(call[1].endswith("/v1/realtime/sessions") for call in calls)
 
 
 def test_load_chat_completion_and_unload(tmp_path: Path) -> None:
@@ -2753,13 +2758,24 @@ def test_openai_realtime_session_endpoint_wraps_voice_stack(tmp_path: Path) -> N
     client, audio_backend, transcription_backend = make_voice_client(tmp_path)
     created = client.post(
         "/v1/realtime/sessions",
-        json={"voice": "alloy", "response_format": "pcm", "instructions": "Be concise."},
+        json={
+            "voice": "alloy",
+            "response_format": "pcm",
+            "instructions": "Be concise.",
+            "modalities": ["text", "audio"],
+            "input_audio_format": "wav",
+            "output_audio_format": "pcm",
+            "turn_detection": {"type": "server_vad", "threshold": 0.5},
+        },
     )
     assert created.status_code == 200
     session = created.json()
     assert session["object"] == "realtime.session"
-    assert session["modalities"] == ["audio", "text"]
+    assert session["modalities"] == ["text", "audio"]
     assert session["instructions"] == "Be concise."
+    assert session["input_audio_format"] == "wav"
+    assert session["output_audio_format"] == "pcm"
+    assert session["turn_detection"] == {"type": "server_vad", "threshold": 0.5}
 
     with client.websocket_connect(f"/v1/realtime/sessions/{session['id']}") as websocket:
         created_event = websocket.receive_json()
@@ -2769,15 +2785,24 @@ def test_openai_realtime_session_endpoint_wraps_voice_stack(tmp_path: Path) -> N
         websocket.send_json(
             {
                 "type": "session.update",
-                "session": {"voice": "af", "response_format": "wav", "language": "en"},
+                "session": {
+                    "voice": "af",
+                    "response_format": "wav",
+                    "language": "en",
+                    "modalities": ["audio", "text"],
+                    "input_audio_format": "pcm",
+                    "turn_detection": None,
+                },
             }
         )
         updated = websocket.receive_json()
         assert updated["type"] == "session.updated"
         assert updated["session"]["voice"] == "af"
         assert updated["session"]["output_audio_format"] == "wav"
+        assert updated["session"]["input_audio_format"] == "pcm"
+        assert updated["session"]["turn_detection"] is None
 
-        websocket.send_json({"type": "conversation.item.delete"})
+        websocket.send_json({"type": "conversation.item.clear"})
         unsupported = websocket.receive_json()
         assert unsupported["type"] == "error"
         assert unsupported["error"]["code"] == "unsupported_event"
@@ -2844,7 +2869,10 @@ def test_openai_realtime_session_endpoint_wraps_voice_stack(tmp_path: Path) -> N
         assert completed["laas_turn"]["transcript"]["language"] == "en"
 
         websocket.send_json({"type": "response.cancel"})
-        assert websocket.receive_json()["type"] == "response.cancelled"
+        cancelled = websocket.receive_json()
+        assert cancelled["type"] == "response.cancelled"
+        assert cancelled["response_id"] == response_id
+        assert cancelled["status"] == "cancelled"
 
         websocket.send_json({"type": "session.close"})
         closed = websocket.receive_json()
@@ -2926,6 +2954,77 @@ def test_openai_realtime_conversation_item_create_text_only_response(tmp_path: P
 
     assert transcription_backend.calls == []
     assert audio_backend.calls[0]["text"] == "text only realtime question"
+
+
+def test_openai_realtime_conversation_item_retrieve_delete_truncate(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+    session = client.post("/v1/realtime/sessions", json={"voice": "alloy", "response_format": "pcm"}).json()
+
+    with client.websocket_connect(f"/v1/realtime/sessions/{session['id']}") as websocket:
+        assert websocket.receive_json()["type"] == "session.created"
+
+        websocket.send_json(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "item_keep",
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "keep this text"}],
+                },
+            }
+        )
+        assert websocket.receive_json()["type"] == "conversation.item.created"
+
+        websocket.send_json(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "id": "item_delete",
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "delete this text"}],
+                },
+            }
+        )
+        assert websocket.receive_json()["type"] == "conversation.item.created"
+
+        websocket.send_json({"type": "conversation.item.retrieve", "item_id": "item_keep"})
+        retrieved = websocket.receive_json()
+        assert retrieved["type"] == "conversation.item.retrieved"
+        assert retrieved["item"]["id"] == "item_keep"
+
+        websocket.send_json({"type": "conversation.item.truncate", "item_id": "item_keep", "text_end_index": 4})
+        truncated = websocket.receive_json()
+        assert truncated["type"] == "conversation.item.truncated"
+        assert truncated["item"]["content"][0]["text"] == "keep"
+
+        websocket.send_json({"type": "conversation.item.delete", "item_id": "item_delete"})
+        deleted = websocket.receive_json()
+        assert deleted["type"] == "conversation.item.deleted"
+        assert deleted["item_id"] == "item_delete"
+
+        websocket.send_json({"type": "conversation.item.retrieve", "item_id": "item_delete"})
+        missing = websocket.receive_json()
+        assert missing["type"] == "error"
+        assert missing["error"]["code"] == "item_not_found"
+
+        websocket.send_json({"type": "response.create"})
+        assert websocket.receive_json()["type"] == "response.created"
+        assert websocket.receive_json()["type"] == "response.output_item.added"
+        text_delta = websocket.receive_json()
+        assert text_delta["type"] == "response.output_text.delta"
+        assert text_delta["delta"] == "keep"
+        while True:
+            event = websocket.receive_json()
+            if event["type"] == "response.completed":
+                break
+
+        websocket.send_json({"type": "session.close"})
+        assert websocket.receive_json()["type"] == "session.closed"
+
+    assert transcription_backend.calls == []
+    assert audio_backend.calls[0]["text"] == "keep"
 
 
 def test_openai_realtime_conversation_item_create_rejects_audio_content(tmp_path: Path) -> None:
