@@ -2702,6 +2702,53 @@ def test_voice_session_realtime_websocket_buffer_commit(tmp_path: Path) -> None:
     assert client.get(f"/v1/local/voice/sessions/{session['id']}").status_code == 404
 
 
+def test_voice_session_realtime_session_update_and_response_create(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+    session = client.post(
+        "/v1/local/voice/sessions",
+        json={"voice": "alloy", "response_format": "pcm"},
+    ).json()
+
+    with client.websocket_connect(f"/v1/local/voice/sessions/{session['id']}/realtime") as websocket:
+        assert websocket.receive_json()["type"] == "session.created"
+
+        websocket.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "instructions": "Answer briefly.",
+                    "voice": "af",
+                    "response_format": "wav",
+                    "language": "en",
+                },
+            }
+        )
+        updated = websocket.receive_json()
+        assert updated["type"] == "session.updated"
+        assert updated["session"]["voice"] == "af"
+        assert updated["session"]["response_format"] == "wav"
+
+        websocket.send_json(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(b"fake audio bytes").decode("ascii"),
+            }
+        )
+        assert websocket.receive_json()["type"] == "input_audio_buffer.appended"
+
+        websocket.send_json({"type": "response.create", "filename": "sample.wav"})
+        completed = websocket.receive_json()
+        assert completed["type"] == "response.completed"
+        assert completed["turn"]["audio"]["format"] == "wav"
+        assert completed["turn"]["transcript"]["language"] == "en"
+
+        websocket.send_json({"type": "session.close"})
+        assert websocket.receive_json()["type"] == "session.closed"
+
+    assert audio_backend.calls[0]["voice"] == "af"
+    assert transcription_backend.calls[0]["language"] == "en"
+
+
 def test_patch_model_directory_setting(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     target = tmp_path / "models"

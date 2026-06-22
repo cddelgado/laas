@@ -105,6 +105,9 @@ OpenAI endpoint support is tracked in
 Gemma multimodal support and live audit commands are tracked in
 [docs/GEMMA_MULTIMODAL.md](docs/GEMMA_MULTIMODAL.md).
 
+Local realtime voice compatibility is documented in
+[docs/REALTIME.md](docs/REALTIME.md).
+
 Windows PowerShell:
 
 ```powershell

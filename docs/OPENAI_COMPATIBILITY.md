@@ -26,6 +26,7 @@ Fine-tuning, Realtime, Containers, Skills, and Administration.
 | Local Storage Maintenance | `GET /v1/local/storage/status`, `POST /v1/local/storage/prune`, `POST /v1/local/storage/vacuum` | SQLite/file-storage usage, 180-day unused prune policy, and database vacuum. |
 | Images | `POST /v1/images/generations`, `POST /v1/images/variations`, `POST /v1/images/edits` | Local Diffusers generation, variation, and inpainting/edit compatibility. |
 | Audio | `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` | Local Kokoro TTS and whisper.cpp-compatible STT. |
+| Local Voice Realtime | `WS /v1/local/voice/sessions/{session_id}/realtime` | Local realtime voice transport over Kokoro, Whisper, and Gemma. See [REALTIME.md](REALTIME.md). |
 
 ## Multimodal Notes
 
@@ -59,9 +60,10 @@ These routes return OpenAI-shaped `501` errors with
 
 ## Not Applicable
 
-LAAS does not register Administration, Containers, Skills, ChatKit, or Realtime
-OpenAI cloud APIs. Those surfaces require OpenAI-hosted account, organization,
-session, or cloud execution resources.
+LAAS does not register Administration, Containers, Skills, ChatKit, or hosted
+OpenAI Realtime cloud APIs. Those surfaces require OpenAI-hosted account,
+organization, session, or cloud execution resources. LAAS does provide a local
+voice realtime WebSocket documented in [REALTIME.md](REALTIME.md).
 
 ## Inspect Programmatically
 

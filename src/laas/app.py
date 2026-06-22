@@ -792,6 +792,58 @@ def create_app(
         finally:
             media_path.unlink(missing_ok=True)
 
+    def _update_voice_session_from_realtime_event(session: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
+        session_patch = event.get("session") if isinstance(event.get("session"), dict) else event
+        allowed = {
+            "instructions",
+            "voice",
+            "response_format",
+            "language",
+            "prompt",
+            "temperature",
+            "speed",
+            "lang",
+        }
+        if "instructions" in session_patch:
+            instructions = session_patch.get("instructions")
+            session["messages"] = [{"role": "system", "content": instructions}] if instructions else []
+        for key in allowed - {"instructions"}:
+            if key in session_patch:
+                session[key] = session_patch[key]
+        session["updated_at"] = int(time.time())
+        return _public_voice_session(session)
+
+    async def _run_realtime_voice_turn(
+        *,
+        websocket: WebSocket,
+        session: dict[str, Any],
+        session_id: str,
+        audio_bytes: bytes,
+        event: dict[str, Any],
+    ) -> None:
+        if not audio_bytes:
+            await websocket.send_json({"type": "error", "error": {"message": "audio buffer is empty", "code": "empty_audio"}})
+            return
+        media_path = _bytes_to_temp_file(audio_bytes, filename=event.get("filename"))
+        turn_payload: dict[str, Any] | None = None
+        try:
+            turn_payload = _run_voice_turn(
+                session,
+                media_path,
+                response_format=event.get("response_format"),
+                voice=event.get("voice"),
+                language=event.get("language"),
+                prompt=event.get("prompt"),
+                temperature=event.get("temperature"),
+                speed=event.get("speed"),
+            )
+        except Exception as exc:
+            await websocket.send_json({"type": "error", "error": {"message": str(exc), "code": "voice_turn_failed"}})
+        finally:
+            media_path.unlink(missing_ok=True)
+        if turn_payload is not None:
+            await websocket.send_json({"type": "response.completed", "session_id": session_id, "turn": turn_payload})
+
     @app.websocket("/v1/local/voice/sessions/{session_id}/realtime")
     async def realtime_voice_session(session_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -812,6 +864,10 @@ def create_app(
             while True:
                 event = await websocket.receive_json()
                 event_type = event.get("type")
+                if event_type == "session.update":
+                    session_payload = _update_voice_session_from_realtime_event(session, event)
+                    await websocket.send_json({"type": "session.updated", "session": session_payload})
+                    continue
                 if event_type in {"session.close", "close"}:
                     session["status"] = "ended"
                     session["updated_at"] = int(time.time())
@@ -842,7 +898,7 @@ def create_app(
                         }
                     )
                     continue
-                if event_type in {"input_audio_buffer.commit", "voice.turn"}:
+                if event_type in {"input_audio_buffer.commit", "voice.turn", "response.create"}:
                     if event_type == "voice.turn":
                         try:
                             audio_bytes = base64.b64decode(event.get("audio", ""), validate=True)
@@ -857,32 +913,13 @@ def create_app(
                     else:
                         audio_bytes = bytes(audio_buffer)
                         audio_buffer.clear()
-                    if not audio_bytes:
-                        await websocket.send_json(
-                            {"type": "error", "error": {"message": "audio buffer is empty", "code": "empty_audio"}}
-                        )
-                        continue
-                    media_path = _bytes_to_temp_file(audio_bytes, filename=event.get("filename"))
-                    turn_payload: dict[str, Any] | None = None
-                    try:
-                        turn_payload = _run_voice_turn(
-                            session,
-                            media_path,
-                            response_format=event.get("response_format"),
-                            voice=event.get("voice"),
-                            language=event.get("language"),
-                            prompt=event.get("prompt"),
-                            temperature=event.get("temperature"),
-                            speed=event.get("speed"),
-                        )
-                    except Exception as exc:
-                        await websocket.send_json(
-                            {"type": "error", "error": {"message": str(exc), "code": "voice_turn_failed"}}
-                        )
-                    finally:
-                        media_path.unlink(missing_ok=True)
-                    if turn_payload is not None:
-                        await websocket.send_json({"type": "response.completed", "session_id": session_id, "turn": turn_payload})
+                    await _run_realtime_voice_turn(
+                        websocket=websocket,
+                        session=session,
+                        session_id=session_id,
+                        audio_bytes=audio_bytes,
+                        event=event,
+                    )
                     continue
 
                 await websocket.send_json(
