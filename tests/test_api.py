@@ -41,6 +41,7 @@ from laas.transcription import (
     transcription_to_response,
 )
 from laas.tts import AudioBackend, AudioEncoderMissingError, AudioManager, SynthesizedSpeech, encode_audio, resolve_voice
+from laas.video import GeneratedVideo, VideoBackend, VideoManager
 
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -299,6 +300,19 @@ class FakeImageEditBackend(ImageEditBackend):
         self.closed = True
 
 
+class FakeVideoBackend(VideoBackend):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.closed = False
+
+    def generate(self, **kwargs) -> GeneratedVideo:
+        self.calls.append(kwargs)
+        return GeneratedVideo(content=b"fake-mp4", media_type="video/mp4")
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_diffusers_image_edit_backend_passes_padding_crop(tmp_path: Path) -> None:
     from PIL import Image
 
@@ -401,6 +415,40 @@ def make_image_client(
 
     client = TestClient(create_app(settings=settings, manager=text_manager, image_manager=image_manager))
     return client, image_backend
+
+
+def make_video_client(
+    tmp_path: Path,
+    *,
+    write_model: bool = True,
+    auto_download: bool = False,
+) -> tuple[TestClient, FakeVideoBackend]:
+    settings = Settings(
+        model_dir=tmp_path,
+        file_storage_dir=tmp_path / "file-storage",
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        video_generation_idle_unload_seconds=0,
+        video_generation_auto_download=auto_download,
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    video_backend = FakeVideoBackend()
+    video_manager = VideoManager(settings, backend_factory=lambda model_path, active_settings: video_backend)
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    if write_model:
+        settings.video_generation_high_noise_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.video_generation_low_noise_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.video_generation_vae_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.video_generation_high_noise_path.write_bytes(b"high")
+        settings.video_generation_low_noise_path.write_bytes(b"low")
+        settings.video_generation_vae_path.write_bytes(b"vae")
+
+    client = TestClient(create_app(settings=settings, manager=text_manager, video_manager=video_manager))
+    return client, video_backend
 
 
 def make_image_edit_client(
@@ -1397,6 +1445,147 @@ def test_image_generation_auto_downloads_for_openai_client_path(tmp_path: Path, 
     assert status["download_finished_at"] is not None
 
 
+def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> None:
+    client, backend = make_video_client(tmp_path)
+
+    status = client.get("/v1/local/videos/status").json()
+    assert status["configured_model"] == "wan2.2-i2v-q3"
+    assert status["downloaded"] is True
+    assert status["is_loaded"] is False
+    assert status["hf_repo_id"] == "QuantStack/Wan2.2-I2V-A14B-GGUF"
+    assert status["high_noise_filename"] == "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf"
+    assert status["low_noise_filename"] == "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf"
+    assert status["vae_filename"] == "VAE/Wan2.1_VAE.safetensors"
+
+    loaded = client.post("/v1/local/videos/load", json={}).json()
+    assert loaded["is_loaded"] is True
+
+    response = client.post(
+        "/v1/videos/generations",
+        data={
+            "model": "wan2.2-i2v-q3",
+            "prompt": "a brass table lamp glowing in a quiet room",
+            "size": "640x360",
+            "response_format": "b64_json",
+            "seconds": "3",
+            "fps": "12",
+            "num_inference_steps": "6",
+            "guidance_scale": "1.5",
+            "seed": "42",
+        },
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert base64.b64decode(payload["data"][0]["b64_json"]) == b"fake-mp4"
+    assert backend.calls[0]["prompt"] == "a brass table lamp glowing in a quiet room"
+    assert backend.calls[0]["width"] == 640
+    assert backend.calls[0]["height"] == 360
+    assert backend.calls[0]["seconds"] == 3
+    assert backend.calls[0]["fps"] == 12
+    assert backend.calls[0]["num_inference_steps"] == 6
+    assert backend.calls[0]["guidance_scale"] == 1.5
+    assert backend.calls[0]["seed"] == 42
+    assert backend.calls[0]["image_bytes"] == PNG_1X1
+
+    unloaded = client.post("/v1/local/videos/unload", json={}).json()
+    assert unloaded["is_loaded"] is False
+    assert backend.closed is True
+
+
+def test_video_generation_supports_url_response(tmp_path: Path) -> None:
+    client, _backend = make_video_client(tmp_path)
+
+    response = client.post(
+        "/v1/videos/generations",
+        data={
+            "prompt": "a slow camera push across a workbench",
+            "response_format": "url",
+        },
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    video_response = client.get(payload["data"][0]["url"])
+    assert video_response.status_code == 200
+    assert video_response.headers["content-type"] == "video/mp4"
+    assert video_response.content == b"fake-mp4"
+    assert len(list((tmp_path / "outputs" / "videos").glob("*.mp4"))) == 1
+
+
+def test_video_generation_rejects_unsupported_options(tmp_path: Path) -> None:
+    client, _backend = make_video_client(tmp_path)
+
+    unknown_model = client.post(
+        "/v1/videos/generations",
+        data={"model": "missing", "prompt": "hello"},
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+    assert unknown_model.status_code == 404
+
+    bad_n = client.post(
+        "/v1/videos/generations",
+        data={"prompt": "hello", "n": "2"},
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+    assert bad_n.status_code == 400
+    assert bad_n.json()["detail"]["error"]["param"] == "n"
+
+    bad_size = client.post(
+        "/v1/videos/generations",
+        data={"prompt": "hello", "size": "big"},
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+    assert bad_size.status_code == 400
+    assert bad_size.json()["detail"]["error"]["param"] == "size"
+
+
+def test_video_generation_missing_model_requires_download(tmp_path: Path) -> None:
+    client, _backend = make_video_client(tmp_path, write_model=False, auto_download=False)
+
+    load_response = client.post("/v1/local/videos/load", json={"download_if_missing": False})
+    assert load_response.status_code == 409
+    assert load_response.json()["detail"]["error"]["code"] == "video_model_not_downloaded"
+    assert load_response.json()["detail"]["error"]["param"] == "high_noise"
+
+    generation_response = client.post(
+        "/v1/videos/generations",
+        data={"prompt": "hello"},
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+    assert generation_response.status_code == 409
+    assert generation_response.json()["detail"]["error"]["code"] == "video_model_not_downloaded"
+
+
+def test_video_generation_auto_downloads_configured_assets(tmp_path: Path, monkeypatch) -> None:
+    client, backend = make_video_client(tmp_path, write_model=False, auto_download=True)
+
+    def fake_hf_hub_download(*, repo_id, filename, local_dir, **kwargs):
+        _ = repo_id, kwargs
+        path = Path(local_dir) / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"asset")
+        return str(path)
+
+    monkeypatch.setattr("laas.video.hf_hub_download", fake_hf_hub_download)
+    response = client.post(
+        "/v1/videos/generations",
+        data={"prompt": "hello"},
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert base64.b64decode(response.json()["data"][0]["b64_json"]) == b"fake-mp4"
+    assert backend.calls[0]["prompt"] == "hello"
+    status = client.get("/v1/local/videos/status").json()
+    assert status["downloaded"] is True
+    assert status["download_in_progress"] is False
+    assert status["download_started_at"] is not None
+    assert status["download_finished_at"] is not None
+
+
 def test_image_auto_download_status_is_observable_during_load(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(
         model_dir=tmp_path,
@@ -1625,13 +1814,16 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
         idle_unload_seconds=0,
         image_idle_unload_seconds=0,
         image_edit_idle_unload_seconds=0,
+        video_generation_idle_unload_seconds=0,
         image_exclusive_load=False,
     )
     text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
     image_backend = FakeImageBackend()
     image_edit_backend = FakeImageEditBackend()
+    video_backend = FakeVideoBackend()
     image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: image_backend)
     image_edit_manager = ImageEditManager(settings, backend_factory=lambda model_path, active_settings: image_edit_backend)
+    video_manager = VideoManager(settings, backend_factory=lambda model_path, active_settings: video_backend)
 
     settings.model_path.parent.mkdir(parents=True, exist_ok=True)
     settings.model_path.write_bytes(b"model")
@@ -1641,6 +1833,12 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
     (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
     settings.image_edit_model_path.mkdir(parents=True, exist_ok=True)
     (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+    settings.video_generation_high_noise_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.video_generation_low_noise_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.video_generation_vae_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.video_generation_high_noise_path.write_bytes(b"high")
+    settings.video_generation_low_noise_path.write_bytes(b"low")
+    settings.video_generation_vae_path.write_bytes(b"vae")
 
     client = TestClient(
         create_app(
@@ -1648,12 +1846,14 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
             manager=text_manager,
             image_manager=image_manager,
             image_edit_manager=image_edit_manager,
+            video_manager=video_manager,
         )
     )
 
     assert client.post("/v1/local/models/load", json={}).json()["is_loaded"] is True
     assert client.post("/v1/local/images/load", json={}).json()["is_loaded"] is True
     assert client.post("/v1/local/images/edit/load", json={}).json()["is_loaded"] is True
+    assert client.post("/v1/local/videos/load", json={}).json()["is_loaded"] is True
 
     response = client.post("/v1/local/unload/all")
     assert response.status_code == 200
@@ -1662,8 +1862,10 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
     assert payload["text"]["is_loaded"] is False
     assert payload["images"]["generation"]["is_loaded"] is False
     assert payload["images"]["edit"]["is_loaded"] is False
+    assert payload["video"]["is_loaded"] is False
     assert image_backend.closed is True
     assert image_edit_backend.closed is True
+    assert video_backend.closed is True
 
 
 def test_image_edit_supports_url_response_and_multiple_outputs(tmp_path: Path, monkeypatch) -> None:

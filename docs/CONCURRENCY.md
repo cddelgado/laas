@@ -4,7 +4,7 @@ This document details the architecture, design decisions, and implementation det
 
 ## 1. Overview & Motivation
 
-Local LLMs (e.g., Gemma-4-it) and Image Generation models (e.g., SDXL Turbo, SD 1.5 edit/inpainting) are heavy GPU-bound resources. In typical developer environments, local GPUs have limited VRAM (e.g., 6GB to 16GB). 
+Local LLMs (e.g., Gemma-4-it), image generation models (e.g., SDXL Turbo, SD 1.5 edit/inpainting), and video generation models are heavy GPU-bound resources. In typical developer environments, local GPUs have limited VRAM (e.g., 6GB to 16GB).
 
 Attempting to run these models concurrently or load them simultaneously can cause:
 1. **CUDA Out-of-Memory (OOM) Errors**: GPU allocations exceed available hardware VRAM, crashing the server.
@@ -34,6 +34,7 @@ Instead of allowing concurrent execution on loaded GPU models, **all** heavy res
 - Chat completions, completions, and responses (`"llm"`)
 - Image generation and variation (`"image"`)
 - Image editing and inpainting (`"image_edit"`)
+- Video generation (`"video"`)
 
 If a request for a model type is running, any concurrent requests (even for the *same* model type) will block and queue up in the coordinator.
 
@@ -63,6 +64,7 @@ When auto-loading models during coordination acquisition, the coordinator checks
 * `"llm"` checks `manager.settings.auto_download`
 * `"image"` checks `manager.settings.image_auto_download`
 * `"image_edit"` checks `manager.settings.image_edit_auto_download`
+* `"video"` checks `manager.settings.video_generation_auto_download`
 
 If auto-download is disabled and the model is missing locally, it immediately raises a `ModelNotDownloadedError` / `ImageNotDownloadedError` instead of attempting an unauthorized Hugging Face download.
 
@@ -91,7 +93,7 @@ Use `GET /v1/local/concurrency/status` to inspect the coordinator while the
 server is running. The response includes:
 
 - `active_resource`: the heavy resource currently holding the coordinator lease.
-- `active_jobs`: active job counts for `llm`, `image`, and `image_edit`.
+- `active_jobs`: active job counts for `llm`, `image`, `image_edit`, and `video`.
 - `total_active_jobs`: total heavy jobs currently running.
 - `registered_resources`: heavy resources known to the coordinator.
 - `resources`: per-resource registered, loaded, manager, and active-job state.

@@ -267,7 +267,8 @@ def test_concurrency_status_reports_active_and_loaded_resources(tmp_path: Path) 
     assert active["total_active_jobs"] == 1
     assert active["resources"]["llm"]["registered"] is True
     assert active["resources"]["llm"]["is_loaded"] is True
-    assert set(active["registered_resources"]) == {"image", "image_edit", "llm"}
+    assert set(active["registered_resources"]) == {"image", "image_edit", "llm", "video"}
+    assert active["resources"]["video"]["registered"] is True
 
     release_chat.set()
     chat_thread.join(timeout=5)

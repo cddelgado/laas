@@ -13,7 +13,7 @@ Fine-tuning, Realtime, Containers, Skills, and Administration.
 
 | Surface | LAAS endpoints | Notes |
 | --- | --- | --- |
-| Models | `GET /v1/models`, `GET /v1/models/{model_id}` | Lists configured local text, embedding, image, and image edit models. |
+| Models | `GET /v1/models`, `GET /v1/models/{model_id}` | Lists configured local text, embedding, image, image edit, and video generation models. |
 | Chat Completions | `POST /v1/chat/completions` | Local Gemma chat with streaming, multimodal content normalization, bounded video-to-frame translation, and Gemma tool-call translation. OpenAI-shaped `input_audio` is rejected by default unless explicitly enabled for a backend that proves native support. |
 | Completions | `POST /v1/completions` | Legacy text completion compatibility over the local llama.cpp backend. |
 | Responses | `POST /v1/responses`, `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}`, `GET /v1/responses/{id}/input_items` | Local in-memory response storage with text and function-call output normalization. |
@@ -25,6 +25,7 @@ Fine-tuning, Realtime, Containers, Skills, and Administration.
 | Local Jobs | `GET /v1/local/jobs`, `GET /v1/local/jobs/{id}` | Local status records for async vector indexing and batch work. |
 | Local Storage Maintenance | `GET /v1/local/storage/status`, `POST /v1/local/storage/prune`, `POST /v1/local/storage/vacuum` | SQLite/file-storage usage, 180-day unused prune policy, and database vacuum. |
 | Images | `POST /v1/images/generations`, `POST /v1/images/variations`, `POST /v1/images/edits` | Local Diffusers generation, variation, and inpainting/edit compatibility. |
+| Video Generation | `POST /v1/videos/generations` | Local OpenAI-shaped image-to-video surface for the configured Wan2.2 I2V Q3 assets. Lifecycle endpoints and asset downloads are implemented; actual GGUF execution requires a configured runner backend such as ComfyUI-GGUF or a future native Wan runner. |
 | Audio | `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/audio/translations` | Local Kokoro TTS and whisper.cpp-compatible STT. |
 | Local Voice Realtime | `POST /v1/realtime/sessions`, `WS /v1/realtime/sessions/{session_id}`, `WS /v1/local/voice/sessions/{session_id}/realtime` | OpenAI-shaped local realtime wrapper plus the stable LAAS local transport over Kokoro, Whisper, and Gemma. Supports text `conversation.item.create/retrieve/delete/truncate`, session config round-tripping, backend text stream deltas, built-in PCM/WAV server VAD, and chunked response events. See [REALTIME.md](REALTIME.md). |
 

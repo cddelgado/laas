@@ -9,7 +9,7 @@ from typing import Any, Generator, Iterable, Literal
 
 logger = logging.getLogger("laas.concurrency")
 
-HeavyResourceType = Literal["llm", "image", "image_edit"]
+HeavyResourceType = Literal["llm", "image", "image_edit", "video"]
 
 
 class ConcurrencyCoordinator:
@@ -22,6 +22,7 @@ class ConcurrencyCoordinator:
             "llm": 0,
             "image": 0,
             "image_edit": 0,
+            "video": 0,
         }
         self.active_resource: HeavyResourceType | None = None
         self.managers: dict[HeavyResourceType, Any] = {}
@@ -147,6 +148,8 @@ class ConcurrencyCoordinator:
             return bool(getattr(manager.settings, "image_auto_download", True))
         if resource == "image_edit":
             return bool(getattr(manager.settings, "image_edit_auto_download", True))
+        if resource == "video":
+            return bool(getattr(manager.settings, "video_generation_auto_download", True))
         return True
 
     @staticmethod

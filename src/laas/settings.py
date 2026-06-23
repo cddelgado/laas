@@ -128,10 +128,27 @@ class Settings(BaseSettings):
     image_edit_auto_load: bool = False
     image_edit_auto_download: bool = True
     image_edit_idle_unload_seconds: int = 900
+    video_generation_model_id: str = "wan2.2-i2v-q3"
+    video_generation_hf_repo_id: str = "QuantStack/Wan2.2-I2V-A14B-GGUF"
+    video_generation_high_noise_filename: str = "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf"
+    video_generation_low_noise_filename: str = "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf"
+    video_generation_vae_filename: str = "VAE/Wan2.1_VAE.safetensors"
+    video_generation_default_size: str = "832x480"
+    video_generation_default_seconds: float = 4.0
+    video_generation_default_fps: int = 16
+    video_generation_num_inference_steps: int = 8
+    video_generation_guidance_scale: float = 1.0
+    video_generation_default_response_format: str = "b64_json"
+    video_generation_output_dir: Path | None = None
+    video_generation_output_retention_seconds: int = 86400
+    video_generation_auto_load: bool = False
+    video_generation_auto_download: bool = True
+    video_generation_idle_unload_seconds: int = 900
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @field_validator(
         "image_output_dir",
+        "video_generation_output_dir",
         "mmproj_filename",
         "mmproj_repo_id",
         "mtp_filename",
@@ -204,8 +221,28 @@ class Settings(BaseSettings):
         return self.model_dir / self.image_edit_hf_repo_id.replace("/", "__")
 
     @property
+    def video_generation_model_path(self) -> Path:
+        return self.model_dir / self.video_generation_hf_repo_id.replace("/", "__")
+
+    @property
+    def video_generation_high_noise_path(self) -> Path:
+        return self.video_generation_model_path / self.video_generation_high_noise_filename
+
+    @property
+    def video_generation_low_noise_path(self) -> Path:
+        return self.video_generation_model_path / self.video_generation_low_noise_filename
+
+    @property
+    def video_generation_vae_path(self) -> Path:
+        return self.video_generation_model_path / self.video_generation_vae_filename
+
+    @property
     def resolved_image_output_dir(self) -> Path:
         return self.image_output_dir or (self.model_dir / "outputs" / "images")
+
+    @property
+    def resolved_video_generation_output_dir(self) -> Path:
+        return self.video_generation_output_dir or (self.model_dir / "outputs" / "videos")
 
     @property
     def file_storage_db_path(self) -> Path:
@@ -308,6 +345,24 @@ class Settings(BaseSettings):
             "image_edit_auto_load": self.image_edit_auto_load,
             "image_edit_auto_download": self.image_edit_auto_download,
             "image_edit_idle_unload_seconds": self.image_edit_idle_unload_seconds,
+            "video_generation_model_id": self.video_generation_model_id,
+            "video_generation_hf_repo_id": self.video_generation_hf_repo_id,
+            "video_generation_high_noise_filename": self.video_generation_high_noise_filename,
+            "video_generation_low_noise_filename": self.video_generation_low_noise_filename,
+            "video_generation_vae_filename": self.video_generation_vae_filename,
+            "video_generation_default_size": self.video_generation_default_size,
+            "video_generation_default_seconds": self.video_generation_default_seconds,
+            "video_generation_default_fps": self.video_generation_default_fps,
+            "video_generation_num_inference_steps": self.video_generation_num_inference_steps,
+            "video_generation_guidance_scale": self.video_generation_guidance_scale,
+            "video_generation_default_response_format": self.video_generation_default_response_format,
+            "video_generation_output_dir": (
+                str(self.video_generation_output_dir) if self.video_generation_output_dir else None
+            ),
+            "video_generation_output_retention_seconds": self.video_generation_output_retention_seconds,
+            "video_generation_auto_load": self.video_generation_auto_load,
+            "video_generation_auto_download": self.video_generation_auto_download,
+            "video_generation_idle_unload_seconds": self.video_generation_idle_unload_seconds,
         }
 
 

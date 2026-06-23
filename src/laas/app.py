@@ -43,12 +43,14 @@ from .schemas import (
     DownloadImageRequest,
     DownloadModelRequest,
     DownloadTranscriptionRequest,
-    LoadEmbeddingRequest,
+    DownloadVideoGenerationRequest,
     ImageGenerationRequest,
+    LoadEmbeddingRequest,
     LoadAudioRequest,
     LoadImageRequest,
     LoadModelRequest,
     LoadTranscriptionRequest,
+    LoadVideoGenerationRequest,
     LoadVoiceStackRequest,
     LocalVoiceStackStatus,
     SettingsPatch,
@@ -61,6 +63,15 @@ from .transcription import (
     transcription_to_response,
 )
 from .tts import AudioEncoderMissingError, AudioEncodingError, AudioManager, AudioNotDownloadedError, encode_audio
+from .video import (
+    VideoManager,
+    VideoNotDownloadedError,
+    VideoParameterError,
+    cleanup_video_outputs,
+    encode_video_output,
+    normalize_video_generation_options,
+    save_video_output,
+)
 
 
 def create_app(
@@ -71,6 +82,7 @@ def create_app(
     embedding_manager: EmbeddingManager | None = None,
     image_manager: ImageManager | None = None,
     image_edit_manager: ImageEditManager | None = None,
+    video_manager: VideoManager | None = None,
 ) -> FastAPI:
     active_settings = settings or load_settings()
     active_manager = manager or ModelManager(active_settings)
@@ -79,11 +91,13 @@ def create_app(
     active_embedding_manager = embedding_manager or EmbeddingManager(active_settings)
     active_image_manager = image_manager or ImageManager(active_settings)
     active_image_edit_manager = image_edit_manager or ImageEditManager(active_settings)
+    active_video_manager = video_manager or VideoManager(active_settings)
 
     coordinator = ConcurrencyCoordinator()
     coordinator.register_manager("llm", active_manager)
     coordinator.register_manager("image", active_image_manager)
     coordinator.register_manager("image_edit", active_image_edit_manager)
+    coordinator.register_manager("video", active_video_manager)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -123,6 +137,11 @@ def create_app(
                 active_image_edit_manager.load(download_if_missing=active_settings.image_edit_auto_download)
             except ImageNotDownloadedError:
                 pass
+        if active_settings.video_generation_auto_load:
+            try:
+                active_video_manager.load(download_if_missing=active_settings.video_generation_auto_download)
+            except (VideoNotDownloadedError, RuntimeError):
+                pass
         yield
 
     app = FastAPI(
@@ -138,6 +157,7 @@ def create_app(
     app.state.embedding_manager = active_embedding_manager
     app.state.image_manager = active_image_manager
     app.state.image_edit_manager = active_image_edit_manager
+    app.state.video_manager = active_video_manager
     app.state.coordinator = coordinator
     app.state.voice_sessions = {}
 
@@ -177,6 +197,16 @@ def create_app(
         if active_settings.image_exclusive_load and active_image_manager.is_loaded:
             active_image_manager.unload()
 
+    def video_response_item(*, request: Request, video, response_format: str) -> dict[str, Any]:
+        if response_format == "b64_json":
+            return {"b64_json": encode_video_output(video)}
+        path = save_video_output(
+            content=video.content,
+            output_dir=active_settings.resolved_video_generation_output_dir,
+            media_type=video.media_type,
+        )
+        return {"url": str(request.url_for("get_local_video_file", filename=path.name))}
+
     @app.get("/health")
     def health() -> dict[str, Any]:
         return {
@@ -188,6 +218,7 @@ def create_app(
             "voice_stack_loaded": active_audio_manager.is_loaded and active_transcription_manager.is_loaded,
             "image_model_loaded": active_image_manager.is_loaded,
             "image_edit_model_loaded": active_image_edit_manager.is_loaded,
+            "video_generation_model_loaded": active_video_manager.is_loaded,
         }
 
     @app.get("/v1/local/settings")
@@ -293,6 +324,7 @@ def create_app(
             transcription = active_transcription_manager.unload().model_dump()
             embeddings = active_embedding_manager.unload().model_dump()
             images = _unload_all_image_models_internal()
+            video = active_video_manager.unload().model_dump()
             coordinator.clear_accelerator_cache()
             return {
                 "text": text,
@@ -300,12 +332,14 @@ def create_app(
                 "transcription": transcription,
                 "embeddings": embeddings,
                 "images": images,
+                "video": video,
                 "is_loaded": (
                     text["is_loaded"]
                     or audio["is_loaded"]
                     or transcription["is_loaded"]
                     or embeddings["is_loaded"]
                     or images["is_loaded"]
+                    or video["is_loaded"]
                 ),
             }
 
@@ -446,6 +480,58 @@ def create_app(
         with coordinator.maintenance():
             return active_image_edit_manager.unload().model_dump()
 
+    @app.get("/v1/local/videos/status")
+    def video_generation_status() -> dict[str, Any]:
+        return active_video_manager.status().model_dump()
+
+    @app.post("/v1/local/videos/download")
+    def download_video_generation_model(request: DownloadVideoGenerationRequest) -> dict[str, Any]:
+        path = active_video_manager.download(
+            hf_repo_id=request.hf_repo_id,
+            high_noise_filename=request.high_noise_filename,
+            low_noise_filename=request.low_noise_filename,
+            vae_filename=request.vae_filename,
+        )
+        return {
+            "model_id": request.model_id or active_settings.video_generation_model_id,
+            "path": str(path),
+            "downloaded": True,
+            "assets": {
+                "high_noise": str(active_settings.video_generation_high_noise_path),
+                "low_noise": str(active_settings.video_generation_low_noise_path),
+                "vae": str(active_settings.video_generation_vae_path),
+            },
+        }
+
+    @app.post("/v1/local/videos/load")
+    def load_video_generation_model(request: LoadVideoGenerationRequest) -> dict[str, Any]:
+        with coordinator.maintenance("video"):
+            try:
+                return active_video_manager.load(
+                    model_id=request.model_id,
+                    hf_repo_id=request.hf_repo_id,
+                    high_noise_filename=request.high_noise_filename,
+                    low_noise_filename=request.low_noise_filename,
+                    vae_filename=request.vae_filename,
+                    download_if_missing=request.download_if_missing,
+                ).model_dump()
+            except VideoNotDownloadedError as exc:
+                raise openai_error(
+                    409,
+                    "The configured video generation model is not downloaded. Call POST /v1/local/videos/download first, "
+                    "or retry POST /v1/local/videos/load with download_if_missing=true.",
+                    type_="invalid_request_error",
+                    param=exc.asset,
+                    code="video_model_not_downloaded",
+                ) from exc
+            except RuntimeError as exc:
+                raise openai_error(503, str(exc), type_="server_error", code="video_backend_missing") from exc
+
+    @app.post("/v1/local/videos/unload")
+    def unload_video_generation_model() -> dict[str, Any]:
+        with coordinator.maintenance():
+            return active_video_manager.unload().model_dump()
+
     @app.get("/v1/local/files/images/{filename}")
     def get_local_image_file(filename: str) -> FileResponse:
         safe_name = Path(filename).name
@@ -461,6 +547,22 @@ def create_app(
         path = active_settings.resolved_image_output_dir / safe_name
         if not path.exists() or not path.is_file():
             raise openai_error(404, "Image output not found", code="not_found")
+        return FileResponse(path, media_type=media_type, filename=safe_name)
+
+    @app.get("/v1/local/files/videos/{filename}")
+    def get_local_video_file(filename: str) -> FileResponse:
+        safe_name = Path(filename).name
+        suffix = Path(safe_name).suffix.lower()
+        media_type = {
+            ".mp4": "video/mp4",
+            ".webm": "video/webm",
+            ".mov": "video/quicktime",
+        }.get(suffix)
+        if safe_name != filename or media_type is None:
+            raise openai_error(404, "Video output not found", code="not_found")
+        path = active_settings.resolved_video_generation_output_dir / safe_name
+        if not path.exists() or not path.is_file():
+            raise openai_error(404, "Video output not found", code="not_found")
         return FileResponse(path, media_type=media_type, filename=safe_name)
 
     @app.get("/v1/local/audio/status")
@@ -1737,6 +1839,88 @@ def create_app(
             raise openai_error(503, str(exc), type_="server_error", code="image_backend_missing") from exc
         except Exception as exc:
             raise openai_error(500, str(exc), type_="server_error", code="image_generation_failed") from exc
+
+        return {
+            "created": int(time.time()),
+            "data": data,
+        }
+
+    @app.post("/v1/videos/generations")
+    def create_video_generation(
+        request: Request,
+        prompt: str = Form(...),
+        image: UploadFile = File(...),
+        model: str | None = Form(None),
+        n: int = Form(1),
+        size: str | None = Form(None),
+        response_format: str | None = Form(None),
+        user: str | None = Form(None),
+        seconds: float | None = Form(None),
+        fps: int | None = Form(None),
+        num_inference_steps: int | None = Form(None),
+        guidance_scale: float | None = Form(None),
+        seed: int | None = Form(None),
+    ) -> dict[str, Any]:
+        _ = user
+        response_format = response_format or active_settings.video_generation_default_response_format
+        if response_format not in {"b64_json", "url"}:
+            raise openai_error(400, "response_format must be b64_json or url", param="response_format")
+        if n != 1:
+            raise openai_error(400, "n=1 is the only supported value for local video generation", param="n")
+        if model and model != active_settings.video_generation_model_id:
+            raise openai_error(
+                404,
+                f"The video generation model '{model}' is not available. Configured video generation model is "
+                f"'{active_settings.video_generation_model_id}'.",
+                param="model",
+                code="model_not_found",
+            )
+        try:
+            with coordinator.execute("video"):
+                options = normalize_video_generation_options(
+                    prompt=prompt,
+                    size=size or active_settings.video_generation_default_size,
+                    seconds=seconds,
+                    fps=fps,
+                    default_seconds=active_settings.video_generation_default_seconds,
+                    default_fps=active_settings.video_generation_default_fps,
+                    default_steps=active_settings.video_generation_num_inference_steps,
+                    default_guidance_scale=active_settings.video_generation_guidance_scale,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                )
+                cleanup_video_outputs(
+                    output_dir=active_settings.resolved_video_generation_output_dir,
+                    retention_seconds=active_settings.video_generation_output_retention_seconds,
+                )
+                video = active_video_manager.generate(
+                    prompt=options.prompt,
+                    image_bytes=image.file.read(),
+                    width=options.width,
+                    height=options.height,
+                    seconds=options.seconds,
+                    fps=options.fps,
+                    num_inference_steps=options.num_inference_steps,
+                    guidance_scale=options.guidance_scale,
+                    seed=seed,
+                )
+                data = [video_response_item(request=request, video=video, response_format=response_format)]
+        except VideoNotDownloadedError as exc:
+            raise openai_error(
+                409,
+                "The configured video generation model is not downloaded. Call POST /v1/local/videos/download first.",
+                type_="invalid_request_error",
+                param=exc.asset,
+                code="video_model_not_downloaded",
+            ) from exc
+        except VideoParameterError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param=exc.param) from exc
+        except ValueError as exc:
+            raise openai_error(400, str(exc), type_="invalid_request_error", param="size") from exc
+        except RuntimeError as exc:
+            raise openai_error(503, str(exc), type_="server_error", code="video_backend_missing") from exc
+        except Exception as exc:
+            raise openai_error(500, str(exc), type_="server_error", code="video_generation_failed") from exc
 
         return {
             "created": int(time.time()),

@@ -118,6 +118,39 @@ class LocalImageEditStatus(LocalImageStatus):
     composite_blur_radius: int = 0
 
 
+class LocalVideoGenerationStatus(BaseModel):
+    configured_model: str
+    loaded_model: str | None
+    is_loaded: bool
+    model_path: str
+    downloaded: bool
+    hf_repo_id: str
+    high_noise_filename: str
+    low_noise_filename: str
+    vae_filename: str
+    high_noise_path: str
+    low_noise_path: str
+    vae_path: str
+    default_size: str
+    default_seconds: float
+    default_fps: int
+    num_inference_steps: int
+    guidance_scale: float
+    output_dir: str
+    output_retention_seconds: int
+    idle_unload_seconds: int
+    last_used_at: float | None = None
+    download_in_progress: bool = False
+    download_started_at: float | None = None
+    download_finished_at: float | None = None
+    last_download_error: str | None = None
+    active_jobs: int = 0
+    current_operation: str | None = None
+    last_job_started_at: float | None = None
+    last_job_finished_at: float | None = None
+    last_job_error: str | None = None
+
+
 class DownloadAudioRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
@@ -158,6 +191,18 @@ class DownloadImageRequest(BaseModel):
 class LoadImageRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
+    download_if_missing: bool = True
+
+
+class DownloadVideoGenerationRequest(BaseModel):
+    model_id: str | None = None
+    hf_repo_id: str | None = None
+    high_noise_filename: str | None = None
+    low_noise_filename: str | None = None
+    vae_filename: str | None = None
+
+
+class LoadVideoGenerationRequest(DownloadVideoGenerationRequest):
     download_if_missing: bool = True
 
 
@@ -461,3 +506,19 @@ class SettingsPatch(BaseModel):
     image_edit_auto_load: bool | None = None
     image_edit_auto_download: bool | None = None
     image_edit_idle_unload_seconds: int | None = Field(default=None, ge=0)
+    video_generation_model_id: str | None = None
+    video_generation_hf_repo_id: str | None = None
+    video_generation_high_noise_filename: str | None = None
+    video_generation_low_noise_filename: str | None = None
+    video_generation_vae_filename: str | None = None
+    video_generation_default_size: str | None = None
+    video_generation_default_seconds: float | None = Field(default=None, gt=0)
+    video_generation_default_fps: int | None = Field(default=None, gt=0)
+    video_generation_num_inference_steps: int | None = Field(default=None, gt=0)
+    video_generation_guidance_scale: float | None = None
+    video_generation_default_response_format: str | None = None
+    video_generation_output_dir: str | None = None
+    video_generation_output_retention_seconds: int | None = Field(default=None, ge=0)
+    video_generation_auto_load: bool | None = None
+    video_generation_auto_download: bool | None = None
+    video_generation_idle_unload_seconds: int | None = Field(default=None, ge=0)

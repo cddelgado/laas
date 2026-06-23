@@ -174,6 +174,11 @@ def build_openai_router(
                     created=1712966400,
                     owned_by="stability-local-diffusers",
                 ),
+                OpenAIModel(
+                    id=manager.settings.video_generation_model_id,
+                    created=1712966400,
+                    owned_by="wan-local-gguf",
+                ),
             ]
         )
 
@@ -184,6 +189,7 @@ def build_openai_router(
             embedding_manager.settings.embedding_model_id,
             manager.settings.image_model_id,
             manager.settings.image_edit_model_id,
+            manager.settings.video_generation_model_id,
         }
         if model_id not in known_models:
             raise openai_error(404, f"The model '{model_id}' does not exist", param="model", code="model_not_found")
@@ -193,6 +199,8 @@ def build_openai_router(
             owned_by = "stability-local-diffusers"
         elif model_id == manager.settings.image_edit_model_id:
             owned_by = "stability-local-diffusers"
+        elif model_id == manager.settings.video_generation_model_id:
+            owned_by = "wan-local-gguf"
         else:
             owned_by = "sentence-transformers-local"
         return OpenAIModel(id=model_id, created=1712966400, owned_by=owned_by).model_dump()

@@ -36,6 +36,7 @@ and the matching Q8 projector, loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/images/generations`
 - `POST /v1/images/variations`
 - `POST /v1/images/edits`
+- `POST /v1/videos/generations`
 - `POST /v1/audio/speech`
 - `POST /v1/realtime/sessions`
 - `GET /v1/local/settings`
@@ -54,6 +55,10 @@ and the matching Q8 projector, loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 - `POST /v1/local/images/edit/download`
 - `POST /v1/local/images/edit/load`
 - `POST /v1/local/images/edit/unload`
+- `GET /v1/local/videos/status`
+- `POST /v1/local/videos/download`
+- `POST /v1/local/videos/load`
+- `POST /v1/local/videos/unload`
 - `GET /v1/local/audio/status`
 - `GET /v1/local/audio/voices`
 - `POST /v1/local/audio/download`
@@ -617,12 +622,47 @@ edits unloads the generation/variation pipeline first. This keeps SDXL Turbo and
 SD 1.5 inpainting from sitting in memory together unless you explicitly disable
 exclusive loading.
 
+## Local Video Generation
+
+`POST /v1/videos/generations` is implemented as a local image-to-video API
+surface for the configured `wan2.2-i2v-q3` model. The configured assets are the
+Q3_K_M HighNoise and LowNoise GGUF files plus the Wan VAE from
+`QuantStack/Wan2.2-I2V-A14B-GGUF`. LAAS downloads only those three files instead
+of snapshotting the full repository.
+
+The endpoint accepts multipart form data with `prompt`, `image`, and optional
+`size`, `seconds`, `fps`, `num_inference_steps`, `guidance_scale`, `seed`, and
+`response_format`. `response_format` can be `b64_json` or `url`; URL outputs are
+stored under `<LAAS_MODEL_DIR>/outputs/videos` by default and served from
+`/v1/local/files/videos/{filename}`.
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/videos/download `
+  -Body "{}" -ContentType "application/json"
+
+$response = Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8000/v1/videos/generations `
+  -Form @{
+    prompt = "a brass table lamp glowing in a quiet room"
+    image = Get-Item .\frame.png
+    size = "832x480"
+    seconds = "4"
+    response_format = "b64_json"
+  }
+```
+
+The lifecycle and OpenAI-shaped endpoint are present now. Actual Wan2.2 GGUF
+execution requires a runner backend such as ComfyUI-GGUF or a future native Wan
+runner; until one is configured, `POST /v1/local/videos/load` and generation
+return `video_backend_missing` after confirming the configured assets exist.
+
 Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
-and both image pipelines in one request.
+image pipelines, and video generation model in one request.
 
 ## VRAM Concurrency Coordination
 
-LAAS includes a thread-safe VRAM Concurrency Coordinator to serialize heavy GPU-bound resources (LLM completions, SDXL Turbo image generation, and SD 1.5 inpainting). It automatically:
+LAAS includes a thread-safe VRAM Concurrency Coordinator to serialize heavy GPU-bound resources (LLM completions, SDXL Turbo image generation, SD 1.5 inpainting, and video generation). It automatically:
 - Serializes concurrent GPU-bound requests to prevent CUDA Out-of-Memory (OOM) errors and KV cache corruption.
 - Safely unloads conflicting heavy models and clears PyTorch CUDA memory cache on swaps.
 - Stream-wraps completions to hold the serialization lock until the client finishes reading.

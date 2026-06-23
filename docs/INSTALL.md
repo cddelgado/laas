@@ -501,10 +501,54 @@ edits unloads the generation/variation pipeline first. This keeps SDXL Turbo and
 SD 1.5 inpainting from sitting in memory together unless you explicitly disable
 exclusive loading.
 
-Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
-and both image pipelines in one request.
+## 6. Optional Local Video Generation
 
-## 6. Optional Local Voice Stack
+`POST /v1/videos/generations` is the local image-to-video surface. The default
+configured model is `wan2.2-i2v-q3`, using `QuantStack/Wan2.2-I2V-A14B-GGUF`.
+LAAS downloads only these files:
+
+- `HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf`
+- `LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf`
+- `VAE/Wan2.1_VAE.safetensors`
+
+Manual download:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/videos/download `
+  -Body "{}" -ContentType "application/json"
+```
+
+Generation request:
+
+```powershell
+$response = Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8000/v1/videos/generations `
+  -Form @{
+    prompt = "a brass table lamp glowing in a quiet room"
+    image = Get-Item .\frame.png
+    size = "832x480"
+    seconds = "4"
+    response_format = "b64_json"
+  }
+```
+
+The endpoint accepts multipart form data with `prompt`, `image`, and optional
+`size`, `seconds`, `fps`, `num_inference_steps`, `guidance_scale`, `seed`, and
+`response_format`. `response_format=url` writes outputs to
+`LAAS_VIDEO_GENERATION_OUTPUT_DIR`, or `<LAAS_MODEL_DIR>/outputs/videos` when
+unset, and serves them from `/v1/local/files/videos/{filename}`.
+
+The lifecycle, model discovery, targeted downloads, request validation, output
+encoding, and resource coordination are implemented. Actual Wan2.2 GGUF
+execution requires a runner backend such as ComfyUI-GGUF or a future native Wan
+runner; until one is configured, load/generation returns `video_backend_missing`
+after assets are confirmed.
+
+Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
+image pipelines, and video generation model in one request.
+
+## 7. Optional Local Voice Stack
 
 The full local voice stack uses Kokoro TTS plus whisper.cpp STT:
 
@@ -563,7 +607,7 @@ If the executable is not on `PATH`, set:
 LAAS_TTS_FFMPEG_PATH=C:\path\to\ffmpeg.exe
 ```
 
-## 7. Configure Model Storage
+## 8. Configure Model Storage
 
 Built-in defaults:
 
@@ -719,7 +763,7 @@ LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 LAAS_IMAGE_EDIT_IDLE_UNLOAD_SECONDS=900
 ```
 
-## 8. Download/Load Behavior
+## 9. Download/Load Behavior
 
 LAAS uses `huggingface-hub` to download the configured GGUF and projector.
 
@@ -957,7 +1001,7 @@ To opt into missing-model downloads during startup auto-load or first inference:
 LAAS_AUTO_DOWNLOAD=true
 ```
 
-## 9. Run
+## 10. Run
 
 Windows PowerShell:
 
@@ -1031,7 +1075,7 @@ Direct `uvicorn` launches do not ask interactive questions. They are intended
 for service/process-manager use. Use `/v1/local/models/status` and
 `/v1/local/models/download` for manual control in that mode.
 
-## 10. Optional Gemma 4 12B MTP Benchmark
+## 11. Optional Gemma 4 12B MTP Benchmark
 
 This is a research path for the non-default Gemma 4 12B profile. The default
 LAAS profile is Gemma 4 E4B with a projector and no MTP asset.
@@ -1108,7 +1152,7 @@ download a release:
 If a native build changes the flash-attention CLI shape, run with
 `-FlashAttention omit` and compare after the baseline/MTP path is working.
 
-## 11. Tune Gemma 4 Context
+## 12. Tune Gemma 4 Context
 
 Context size, batch size, and GPU layer offload must be tuned together. A larger
 context increases KV/cache memory pressure; reducing GPU layers usually hurts
@@ -1156,7 +1200,7 @@ mapping larger contexts by default and recommends the largest passing profile.
 It loads the configured projector by default to account for multimodal memory
 overhead; add `--without-mmproj` only for text-only tuning.
 
-## 12. Verify
+## 13. Verify
 
 Windows PowerShell:
 
@@ -1241,7 +1285,7 @@ python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image --include-image-edit --include-voice
 ```
 
-## 13. Unload
+## 14. Unload
 
 Windows PowerShell:
 
