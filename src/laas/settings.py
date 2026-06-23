@@ -130,6 +130,7 @@ class Settings(BaseSettings):
     image_edit_idle_unload_seconds: int = 900
     video_generation_model_id: str = "wan2.2-i2v-q3"
     video_generation_hf_repo_id: str = "QuantStack/Wan2.2-I2V-A14B-GGUF"
+    video_generation_diffusers_hf_repo_id: str = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
     video_generation_high_noise_filename: str = "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf"
     video_generation_low_noise_filename: str = "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf"
     video_generation_vae_filename: str = "VAE/Wan2.1_VAE.safetensors"
@@ -144,6 +145,9 @@ class Settings(BaseSettings):
     video_generation_auto_load: bool = False
     video_generation_auto_download: bool = True
     video_generation_idle_unload_seconds: int = 900
+    video_generation_device: str = "auto"
+    video_generation_torch_dtype: str = "auto"
+    video_generation_enable_model_cpu_offload: bool = True
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
     @field_validator(
@@ -223,6 +227,10 @@ class Settings(BaseSettings):
     @property
     def video_generation_model_path(self) -> Path:
         return self.model_dir / self.video_generation_hf_repo_id.replace("/", "__")
+
+    @property
+    def video_generation_diffusers_model_path(self) -> Path:
+        return self.model_dir / self.video_generation_diffusers_hf_repo_id.replace("/", "__")
 
     @property
     def video_generation_high_noise_path(self) -> Path:
@@ -347,6 +355,7 @@ class Settings(BaseSettings):
             "image_edit_idle_unload_seconds": self.image_edit_idle_unload_seconds,
             "video_generation_model_id": self.video_generation_model_id,
             "video_generation_hf_repo_id": self.video_generation_hf_repo_id,
+            "video_generation_diffusers_hf_repo_id": self.video_generation_diffusers_hf_repo_id,
             "video_generation_high_noise_filename": self.video_generation_high_noise_filename,
             "video_generation_low_noise_filename": self.video_generation_low_noise_filename,
             "video_generation_vae_filename": self.video_generation_vae_filename,
@@ -363,6 +372,9 @@ class Settings(BaseSettings):
             "video_generation_auto_load": self.video_generation_auto_load,
             "video_generation_auto_download": self.video_generation_auto_download,
             "video_generation_idle_unload_seconds": self.video_generation_idle_unload_seconds,
+            "video_generation_device": self.video_generation_device,
+            "video_generation_torch_dtype": self.video_generation_torch_dtype,
+            "video_generation_enable_model_cpu_offload": self.video_generation_enable_model_cpu_offload,
         }
 
 

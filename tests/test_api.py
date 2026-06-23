@@ -41,7 +41,7 @@ from laas.transcription import (
     transcription_to_response,
 )
 from laas.tts import AudioBackend, AudioEncoderMissingError, AudioManager, SynthesizedSpeech, encode_audio, resolve_voice
-from laas.video import GeneratedVideo, VideoBackend, VideoManager
+from laas.video import DiffusersWanVideoBackend, GeneratedVideo, VideoBackend, VideoManager, frames_for_duration
 
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -446,6 +446,20 @@ def make_video_client(
         settings.video_generation_high_noise_path.write_bytes(b"high")
         settings.video_generation_low_noise_path.write_bytes(b"low")
         settings.video_generation_vae_path.write_bytes(b"vae")
+        for filename in (
+            "model_index.json",
+            "scheduler/scheduler_config.json",
+            "text_encoder/config.json",
+            "text_encoder/model.safetensors.index.json",
+            "tokenizer/tokenizer.json",
+            "tokenizer/tokenizer_config.json",
+            "transformer/config.json",
+            "transformer_2/config.json",
+            "vae/config.json",
+        ):
+            path = settings.video_generation_diffusers_model_path / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}", encoding="utf-8")
 
     client = TestClient(create_app(settings=settings, manager=text_manager, video_manager=video_manager))
     return client, video_backend
@@ -1453,9 +1467,12 @@ def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     assert status["downloaded"] is True
     assert status["is_loaded"] is False
     assert status["hf_repo_id"] == "QuantStack/Wan2.2-I2V-A14B-GGUF"
+    assert status["diffusers_hf_repo_id"] == "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
     assert status["high_noise_filename"] == "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf"
     assert status["low_noise_filename"] == "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf"
     assert status["vae_filename"] == "VAE/Wan2.1_VAE.safetensors"
+    assert status["device"] == "auto"
+    assert status["torch_dtype"] == "auto"
 
     loaded = client.post("/v1/local/videos/load", json={}).json()
     assert loaded["is_loaded"] is True
@@ -1569,7 +1586,27 @@ def test_video_generation_auto_downloads_configured_assets(tmp_path: Path, monke
         path.write_bytes(b"asset")
         return str(path)
 
+    def fake_snapshot_download(*, repo_id, local_dir, allow_patterns, **kwargs):
+        _ = repo_id, allow_patterns, kwargs
+        path = Path(local_dir)
+        for filename in (
+            "model_index.json",
+            "scheduler/scheduler_config.json",
+            "text_encoder/config.json",
+            "text_encoder/model.safetensors.index.json",
+            "tokenizer/tokenizer.json",
+            "tokenizer/tokenizer_config.json",
+            "transformer/config.json",
+            "transformer_2/config.json",
+            "vae/config.json",
+        ):
+            file_path = path / filename
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text("{}", encoding="utf-8")
+        return str(path)
+
     monkeypatch.setattr("laas.video.hf_hub_download", fake_hf_hub_download)
+    monkeypatch.setattr("laas.video.snapshot_download", fake_snapshot_download)
     response = client.post(
         "/v1/videos/generations",
         data={"prompt": "hello"},
@@ -1584,6 +1621,17 @@ def test_video_generation_auto_downloads_configured_assets(tmp_path: Path, monke
     assert status["download_in_progress"] is False
     assert status["download_started_at"] is not None
     assert status["download_finished_at"] is not None
+
+
+def test_video_generation_frame_count_matches_wan_temporal_stride() -> None:
+    assert frames_for_duration(seconds=4.0, fps=16) == 65
+    assert frames_for_duration(seconds=5.0, fps=16) == 81
+
+
+def test_video_default_backend_is_native_diffusers(tmp_path: Path) -> None:
+    settings = Settings(model_dir=tmp_path, settings_file=tmp_path / "settings.json")
+    backend = VideoManager._default_backend_factory(settings.video_generation_model_path, settings)
+    assert isinstance(backend, DiffusersWanVideoBackend)
 
 
 def test_image_auto_download_status_is_observable_during_load(tmp_path: Path, monkeypatch) -> None:
@@ -1839,6 +1887,20 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
     settings.video_generation_high_noise_path.write_bytes(b"high")
     settings.video_generation_low_noise_path.write_bytes(b"low")
     settings.video_generation_vae_path.write_bytes(b"vae")
+    for filename in (
+        "model_index.json",
+        "scheduler/scheduler_config.json",
+        "text_encoder/config.json",
+        "text_encoder/model.safetensors.index.json",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+        "transformer/config.json",
+        "transformer_2/config.json",
+        "vae/config.json",
+    ):
+        path = settings.video_generation_diffusers_model_path / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
 
     client = TestClient(
         create_app(

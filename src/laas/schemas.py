@@ -123,8 +123,10 @@ class LocalVideoGenerationStatus(BaseModel):
     loaded_model: str | None
     is_loaded: bool
     model_path: str
+    diffusers_model_path: str
     downloaded: bool
     hf_repo_id: str
+    diffusers_hf_repo_id: str
     high_noise_filename: str
     low_noise_filename: str
     vae_filename: str
@@ -136,6 +138,9 @@ class LocalVideoGenerationStatus(BaseModel):
     default_fps: int
     num_inference_steps: int
     guidance_scale: float
+    device: str
+    torch_dtype: str
+    enable_model_cpu_offload: bool
     output_dir: str
     output_retention_seconds: int
     idle_unload_seconds: int
@@ -197,6 +202,7 @@ class LoadImageRequest(BaseModel):
 class DownloadVideoGenerationRequest(BaseModel):
     model_id: str | None = None
     hf_repo_id: str | None = None
+    diffusers_hf_repo_id: str | None = None
     high_noise_filename: str | None = None
     low_noise_filename: str | None = None
     vae_filename: str | None = None
@@ -508,6 +514,7 @@ class SettingsPatch(BaseModel):
     image_edit_idle_unload_seconds: int | None = Field(default=None, ge=0)
     video_generation_model_id: str | None = None
     video_generation_hf_repo_id: str | None = None
+    video_generation_diffusers_hf_repo_id: str | None = None
     video_generation_high_noise_filename: str | None = None
     video_generation_low_noise_filename: str | None = None
     video_generation_vae_filename: str | None = None
@@ -522,3 +529,6 @@ class SettingsPatch(BaseModel):
     video_generation_auto_load: bool | None = None
     video_generation_auto_download: bool | None = None
     video_generation_idle_unload_seconds: int | None = Field(default=None, ge=0)
+    video_generation_device: str | None = None
+    video_generation_torch_dtype: str | None = None
+    video_generation_enable_model_cpu_offload: bool | None = None

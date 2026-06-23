@@ -504,12 +504,26 @@ exclusive loading.
 ## 6. Optional Local Video Generation
 
 `POST /v1/videos/generations` is the local image-to-video surface. The default
-configured model is `wan2.2-i2v-q3`, using `QuantStack/Wan2.2-I2V-A14B-GGUF`.
-LAAS downloads only these files:
+configured model is `wan2.2-i2v-q3`. The native runner uses Diffusers'
+`WanImageToVideoPipeline` with GGUF transformer components.
+
+Install the image dependency set before using it:
+
+```powershell
+python -m pip install -r requirements-image.txt
+```
+
+LAAS downloads these GGUF-side assets from `QuantStack/Wan2.2-I2V-A14B-GGUF`:
 
 - `HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf`
 - `LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf`
 - `VAE/Wan2.1_VAE.safetensors`
+
+It also downloads required non-transformer components from
+`Wan-AI/Wan2.2-I2V-A14B-Diffusers`: `model_index.json`, scheduler, tokenizer,
+text encoder, VAE, and transformer config files. The full transformer
+safetensor shards from the Diffusers repo are not downloaded because the Q3 GGUF
+files provide those weights.
 
 Manual download:
 
@@ -539,11 +553,20 @@ The endpoint accepts multipart form data with `prompt`, `image`, and optional
 `LAAS_VIDEO_GENERATION_OUTPUT_DIR`, or `<LAAS_MODEL_DIR>/outputs/videos` when
 unset, and serves them from `/v1/local/files/videos/{filename}`.
 
-The lifecycle, model discovery, targeted downloads, request validation, output
-encoding, and resource coordination are implemented. Actual Wan2.2 GGUF
-execution requires a runner backend such as ComfyUI-GGUF or a future native Wan
-runner; until one is configured, load/generation returns `video_backend_missing`
-after assets are confirmed.
+Live smoke against a running server:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\video_generation_smoke.py `
+  --output .\wan-video-smoke.mp4 `
+  --seconds 2 `
+  --steps 4
+```
+
+For constrained GPUs, keep
+`LAAS_VIDEO_GENERATION_ENABLE_MODEL_CPU_OFFLOAD=true`, use the default Q3_K_M
+files, and start with short 832x480 clips. The runner maps `seconds` and `fps`
+to Wan's `4n+1` frame cadence, so 4 seconds at 16 fps generates 65 frames and
+5 seconds at 16 fps generates 81 frames.
 
 Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
 image pipelines, and video generation model in one request.

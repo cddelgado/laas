@@ -625,10 +625,13 @@ exclusive loading.
 ## Local Video Generation
 
 `POST /v1/videos/generations` is implemented as a local image-to-video API
-surface for the configured `wan2.2-i2v-q3` model. The configured assets are the
-Q3_K_M HighNoise and LowNoise GGUF files plus the Wan VAE from
-`QuantStack/Wan2.2-I2V-A14B-GGUF`. LAAS downloads only those three files instead
-of snapshotting the full repository.
+surface for the configured `wan2.2-i2v-q3` model. The native runner uses
+Diffusers' `WanImageToVideoPipeline` with the Q3_K_M HighNoise and LowNoise GGUF
+transformers from `QuantStack/Wan2.2-I2V-A14B-GGUF`, plus the tokenizer, text
+encoder, scheduler, VAE, and component configs from
+`Wan-AI/Wan2.2-I2V-A14B-Diffusers`. LAAS downloads only the required GGUF files
+and the required Diffusers-side components, not the full transformer safetensor
+shards from the base repo.
 
 The endpoint accepts multipart form data with `prompt`, `image`, and optional
 `size`, `seconds`, `fps`, `num_inference_steps`, `guidance_scale`, `seed`, and
@@ -652,10 +655,16 @@ $response = Invoke-RestMethod `
   }
 ```
 
-The lifecycle and OpenAI-shaped endpoint are present now. Actual Wan2.2 GGUF
-execution requires a runner backend such as ComfyUI-GGUF or a future native Wan
-runner; until one is configured, `POST /v1/local/videos/load` and generation
-return `video_backend_missing` after confirming the configured assets exist.
+Install `requirements-image.txt` first. The native runner requires `diffusers`,
+`transformers`, `torch`, `pillow`, `safetensors`, and `gguf`. On constrained
+GPUs, keep `LAAS_VIDEO_GENERATION_ENABLE_MODEL_CPU_OFFLOAD=true` and start with
+short 832x480 clips.
+
+Live smoke against a running server:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\video_generation_smoke.py --output .\wan-video-smoke.mp4 --seconds 2 --steps 4
+```
 
 Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
 image pipelines, and video generation model in one request.

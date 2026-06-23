@@ -488,6 +488,7 @@ def create_app(
     def download_video_generation_model(request: DownloadVideoGenerationRequest) -> dict[str, Any]:
         path = active_video_manager.download(
             hf_repo_id=request.hf_repo_id,
+            diffusers_hf_repo_id=request.diffusers_hf_repo_id,
             high_noise_filename=request.high_noise_filename,
             low_noise_filename=request.low_noise_filename,
             vae_filename=request.vae_filename,
@@ -510,6 +511,7 @@ def create_app(
                 return active_video_manager.load(
                     model_id=request.model_id,
                     hf_repo_id=request.hf_repo_id,
+                    diffusers_hf_repo_id=request.diffusers_hf_repo_id,
                     high_noise_filename=request.high_noise_filename,
                     low_noise_filename=request.low_noise_filename,
                     vae_filename=request.vae_filename,

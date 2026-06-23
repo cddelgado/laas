@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import mimetypes
 import threading
 import time
@@ -9,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 from .schemas import LocalVideoGenerationStatus
 from .settings import Settings
@@ -67,6 +68,172 @@ class VideoBackend:
 
 VideoBackendFactory = Callable[[Path, Settings], VideoBackend]
 
+WAN_DIFFUSERS_ALLOW_PATTERNS = (
+    "model_index.json",
+    "scheduler/*",
+    "text_encoder/*",
+    "tokenizer/*",
+    "transformer/config.json",
+    "transformer_2/config.json",
+    "vae/*",
+)
+
+WAN_DIFFUSERS_REQUIRED_FILES = (
+    "model_index.json",
+    "scheduler/scheduler_config.json",
+    "text_encoder/config.json",
+    "text_encoder/model.safetensors.index.json",
+    "tokenizer/tokenizer.json",
+    "tokenizer/tokenizer_config.json",
+    "transformer/config.json",
+    "transformer_2/config.json",
+    "vae/config.json",
+)
+
+
+class DiffusersWanVideoBackend(VideoBackend):
+    def __init__(self, *, model_path: Path, settings: Settings) -> None:
+        self.model_path = model_path
+        self.settings = settings
+        self._pipe = None
+        self._device = None
+
+    def _ensure_pipe(self):
+        if self._pipe is not None:
+            return self._pipe
+        try:
+            import torch
+            from diffusers import (
+                AutoencoderKLWan,
+                GGUFQuantizationConfig,
+                WanImageToVideoPipeline,
+                WanTransformer3DModel,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Wan video generation requires the image/video dependencies: diffusers, transformers, torch, "
+                "pillow, safetensors, and gguf. Install the image extra or requirements-image.txt."
+            ) from exc
+
+        device = self._resolve_device(torch)
+        dtype = self._resolve_dtype(torch, device=device)
+        base_path = self.settings.video_generation_diffusers_model_path
+        quantization_config = GGUFQuantizationConfig(compute_dtype=dtype)
+
+        transformer = WanTransformer3DModel.from_single_file(
+            str(self.settings.video_generation_high_noise_path),
+            quantization_config=quantization_config,
+            config=str(base_path),
+            subfolder="transformer",
+            torch_dtype=dtype,
+        )
+        transformer_2 = WanTransformer3DModel.from_single_file(
+            str(self.settings.video_generation_low_noise_path),
+            quantization_config=quantization_config,
+            config=str(base_path),
+            subfolder="transformer_2",
+            torch_dtype=dtype,
+        )
+        vae = AutoencoderKLWan.from_pretrained(
+            str(base_path),
+            subfolder="vae",
+            torch_dtype=torch.float32,
+        )
+        pipe = WanImageToVideoPipeline.from_pretrained(
+            str(base_path),
+            transformer=transformer,
+            transformer_2=transformer_2,
+            vae=vae,
+            torch_dtype=dtype,
+        )
+        if device == "cuda" and self.settings.video_generation_enable_model_cpu_offload:
+            pipe.enable_model_cpu_offload()
+        else:
+            pipe.to(device)
+        self._pipe = pipe
+        self._device = device
+        return pipe
+
+    def generate(
+        self,
+        *,
+        prompt: str,
+        image_bytes: bytes,
+        width: int,
+        height: int,
+        seconds: float,
+        fps: int,
+        num_inference_steps: int,
+        guidance_scale: float,
+        seed: int | None,
+    ) -> GeneratedVideo:
+        try:
+            import torch
+            from diffusers.utils import export_to_video
+            from PIL import Image
+        except ImportError as exc:
+            raise RuntimeError("Wan video generation dependencies are not installed") from exc
+
+        pipe = self._ensure_pipe()
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize((width, height))
+        num_frames = frames_for_duration(seconds=seconds, fps=fps)
+        generator = None
+        if seed is not None:
+            generator_device = self._device if self._device in {"cuda", "cpu"} else "cpu"
+            generator = torch.Generator(device=generator_device).manual_seed(seed)
+        output = pipe(
+            image=image,
+            prompt=prompt,
+            height=height,
+            width=width,
+            num_frames=num_frames,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            generator=generator,
+        ).frames[0]
+        output_dir = self.settings.resolved_video_generation_output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / f"{uuid.uuid4().hex}.mp4"
+        export_to_video(output, str(path), fps=fps)
+        content = path.read_bytes()
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        return GeneratedVideo(content=content, media_type="video/mp4")
+
+    def close(self) -> None:
+        self._pipe = None
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
+    def _resolve_device(self, torch) -> str:
+        requested = self.settings.video_generation_device.lower()
+        if requested != "auto":
+            return requested
+        if torch.cuda.is_available():
+            return "cuda"
+        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+
+    def _resolve_dtype(self, torch, *, device: str):
+        requested = self.settings.video_generation_torch_dtype.lower()
+        if requested == "float32":
+            return torch.float32
+        if requested == "float16":
+            return torch.float16
+        if requested == "bfloat16":
+            return torch.bfloat16
+        if device == "cuda":
+            return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        return torch.float32
+
 
 class VideoManager:
     def __init__(self, settings: Settings, backend_factory: VideoBackendFactory | None = None) -> None:
@@ -114,6 +281,7 @@ class VideoManager:
         self,
         *,
         hf_repo_id: str | None = None,
+        diffusers_hf_repo_id: str | None = None,
         high_noise_filename: str | None = None,
         low_noise_filename: str | None = None,
         vae_filename: str | None = None,
@@ -121,6 +289,8 @@ class VideoManager:
         with self._download_lock:
             if hf_repo_id:
                 self.settings.video_generation_hf_repo_id = hf_repo_id
+            if diffusers_hf_repo_id:
+                self.settings.video_generation_diffusers_hf_repo_id = diffusers_hf_repo_id
             if high_noise_filename:
                 self.settings.video_generation_high_noise_filename = high_noise_filename
             if low_noise_filename:
@@ -129,7 +299,9 @@ class VideoManager:
                 self.settings.video_generation_vae_filename = vae_filename
 
             local_dir = self.settings.video_generation_model_path
+            diffusers_dir = self.settings.video_generation_diffusers_model_path
             local_dir.mkdir(parents=True, exist_ok=True)
+            diffusers_dir.mkdir(parents=True, exist_ok=True)
             with self._lock:
                 self._download_in_progress = True
                 self._download_started_at = time.time()
@@ -147,6 +319,11 @@ class VideoManager:
                         filename=filename,
                         local_dir=local_dir,
                     )
+                snapshot_download(
+                    repo_id=self.settings.video_generation_diffusers_hf_repo_id,
+                    local_dir=diffusers_dir,
+                    allow_patterns=list(WAN_DIFFUSERS_ALLOW_PATTERNS),
+                )
             except Exception as exc:
                 with self._lock:
                     self._download_in_progress = False
@@ -158,7 +335,7 @@ class VideoManager:
             with self._lock:
                 self._download_in_progress = False
                 self._download_finished_at = time.time()
-            print(f"Video generation assets ready at {local_dir}", flush=True)
+            print(f"Video generation assets ready at {local_dir} and {diffusers_dir}", flush=True)
             return local_dir
 
     def load(
@@ -166,6 +343,7 @@ class VideoManager:
         *,
         model_id: str | None = None,
         hf_repo_id: str | None = None,
+        diffusers_hf_repo_id: str | None = None,
         high_noise_filename: str | None = None,
         low_noise_filename: str | None = None,
         vae_filename: str | None = None,
@@ -181,6 +359,8 @@ class VideoManager:
             self._close_locked()
             if hf_repo_id:
                 self.settings.video_generation_hf_repo_id = hf_repo_id
+            if diffusers_hf_repo_id:
+                self.settings.video_generation_diffusers_hf_repo_id = diffusers_hf_repo_id
             if high_noise_filename:
                 self.settings.video_generation_high_noise_filename = high_noise_filename
             if low_noise_filename:
@@ -250,7 +430,10 @@ class VideoManager:
         return video
 
     def _is_downloaded(self) -> bool:
-        return all(path.exists() for path in self._asset_paths())
+        return all(path.exists() for path in self._asset_paths()) and all(
+            (self.settings.video_generation_diffusers_model_path / filename).exists()
+            for filename in WAN_DIFFUSERS_REQUIRED_FILES
+        )
 
     def _asset_filenames(self) -> tuple[str, str, str]:
         return (
@@ -275,6 +458,10 @@ class VideoManager:
         for path, name in assets:
             if not path.exists():
                 return path, name
+        for filename in WAN_DIFFUSERS_REQUIRED_FILES:
+            path = self.settings.video_generation_diffusers_model_path / filename
+            if not path.exists():
+                return path, "diffusers_base"
         return self.settings.video_generation_model_path, "model"
 
     def _status_snapshot(self, *, downloaded: bool) -> LocalVideoGenerationStatus:
@@ -283,8 +470,10 @@ class VideoManager:
             loaded_model=self._loaded_model,
             is_loaded=self._backend is not None,
             model_path=str(self.settings.video_generation_model_path),
+            diffusers_model_path=str(self.settings.video_generation_diffusers_model_path),
             downloaded=downloaded,
             hf_repo_id=self.settings.video_generation_hf_repo_id,
+            diffusers_hf_repo_id=self.settings.video_generation_diffusers_hf_repo_id,
             high_noise_filename=self.settings.video_generation_high_noise_filename,
             low_noise_filename=self.settings.video_generation_low_noise_filename,
             vae_filename=self.settings.video_generation_vae_filename,
@@ -296,6 +485,9 @@ class VideoManager:
             default_fps=self.settings.video_generation_default_fps,
             num_inference_steps=self.settings.video_generation_num_inference_steps,
             guidance_scale=self.settings.video_generation_guidance_scale,
+            device=self.settings.video_generation_device,
+            torch_dtype=self.settings.video_generation_torch_dtype,
+            enable_model_cpu_offload=self.settings.video_generation_enable_model_cpu_offload,
             output_dir=str(self.settings.resolved_video_generation_output_dir),
             output_retention_seconds=self.settings.video_generation_output_retention_seconds,
             idle_unload_seconds=self.settings.video_generation_idle_unload_seconds,
@@ -346,11 +538,7 @@ class VideoManager:
 
     @staticmethod
     def _default_backend_factory(model_path: Path, settings: Settings) -> VideoBackend:
-        _ = model_path, settings
-        raise RuntimeError(
-            "Wan2.2 GGUF video assets are configured, but no local video runner backend is available yet. "
-            "Use a VideoManager backend_factory integration such as ComfyUI-GGUF or a future native Wan runner."
-        )
+        return DiffusersWanVideoBackend(model_path=model_path, settings=settings)
 
 
 def parse_video_size(size: str) -> tuple[int, int]:
@@ -394,6 +582,11 @@ def normalize_video_generation_options(
         num_inference_steps=num_inference_steps or default_steps,
         guidance_scale=default_guidance_scale if guidance_scale is None else guidance_scale,
     )
+
+
+def frames_for_duration(*, seconds: float, fps: int) -> int:
+    frames = max(1, int(round(seconds * fps)) + 1)
+    return ((frames - 1) // 4) * 4 + 1
 
 
 def encode_video_output(video: GeneratedVideo) -> str:
