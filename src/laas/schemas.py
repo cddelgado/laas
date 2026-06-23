@@ -26,6 +26,13 @@ class LocalModelStatus(BaseModel):
     mmproj_path: str | None = None
     mmproj_downloaded: bool = False
     mmproj_required: bool = True
+    mtp_path: str | None = None
+    mtp_downloaded: bool = False
+    n_gpu_layers: int | None = None
+    n_batch: int | None = None
+    n_ubatch: int | None = None
+    speculative_decoding: bool = False
+    speculative_mode: str | None = None
     capabilities: ModelCapabilities
     idle_unload_seconds: int
     last_used_at: float | None = None
@@ -198,6 +205,7 @@ class DownloadModelRequest(BaseModel):
     hf_repo_id: str | None = None
     filename: str | None = None
     include_mmproj: bool = True
+    include_mtp: bool = True
 
 
 class LoadModelRequest(BaseModel):
@@ -379,6 +387,18 @@ class SettingsPatch(BaseModel):
     n_ctx: int | None = Field(default=None, gt=0)
     n_gpu_layers: int | None = None
     n_threads: int | None = Field(default=None, gt=0)
+    n_threads_batch: int | None = Field(default=None, gt=0)
+    n_batch: int | None = Field(default=None, gt=0)
+    n_ubatch: int | None = Field(default=None, gt=0)
+    flash_attn: bool | None = None
+    offload_kqv: bool | None = None
+    op_offload: bool | None = None
+    swa_full: bool | None = None
+    speculative_decoding: bool | None = None
+    speculative_mode: Literal["prompt_lookup"] | None = None
+    speculative_max_ngram_size: int | None = Field(default=None, gt=0)
+    speculative_num_pred_tokens: int | None = Field(default=None, gt=0)
+    mtp_filename: str | None = None
     idle_unload_seconds: int | None = Field(default=None, ge=0)
     video_max_frames: int | None = Field(default=None, gt=0)
     video_sample_fps: float | None = Field(default=None, gt=0)

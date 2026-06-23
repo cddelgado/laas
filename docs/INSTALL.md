@@ -112,15 +112,13 @@ checked for this doc, CUDA indexes include:
 Example for CUDA 12.4:
 
 ```bash
-python -m pip install llama-cpp-python \
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+python -m pip install --upgrade --force-reinstall --no-cache-dir -r requirements-llama-cuda.txt
 ```
 
 PowerShell:
 
 ```powershell
-python -m pip install llama-cpp-python `
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+python -m pip install --upgrade --force-reinstall --no-cache-dir -r requirements-llama-cuda.txt
 ```
 
 ### Apple Metal
@@ -225,8 +223,11 @@ python -c "import llama_cpp; print(llama_cpp.__version__)"
 
 If a GPU backend installs but inference runs on CPU, reinstall the wheel with
 the correct backend index and confirm the OS driver/runtime can load that
-backend. LAAS passes `n_gpu_layers=-1` by default, so it attempts to offload all
-possible layers when the installed backend supports GPU offload.
+backend. For NVIDIA cards, install a CUDA wheel such as `cu124`; a Vulkan wheel
+will report Vulkan allocation errors even on systems with NVIDIA hardware.
+LAAS sets `LAAS_N_GPU_LAYERS=-1` by default for Gemma 4 E4B because full layer
+offload is the tested fast path on the reference NVIDIA setup. If that does not
+fit in VRAM, lower context and batch first; reduce GPU layers only as a fallback.
 
 ## 4. Optional Video Frame Extraction
 
@@ -593,6 +594,15 @@ LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
 LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_LOAD=false
 LAAS_AUTO_DOWNLOAD=false
+LAAS_N_CTX=32768
+LAAS_N_GPU_LAYERS=-1
+LAAS_N_BATCH=512
+LAAS_N_UBATCH=512
+LAAS_FLASH_ATTN=true
+LAAS_OFFLOAD_KQV=true
+LAAS_SPECULATIVE_DECODING=false
+LAAS_SPECULATIVE_MODE=prompt_lookup
+LAAS_MTP_FILENAME=
 LAAS_IDLE_UNLOAD_SECONDS=900
 LAAS_TTS_MODEL_ID=kokoro-82m
 LAAS_TTS_HF_REPO_ID=fastrtc/kokoro-onnx
@@ -652,6 +662,15 @@ LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
 LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_LOAD=false
 LAAS_AUTO_DOWNLOAD=false
+LAAS_N_CTX=32768
+LAAS_N_GPU_LAYERS=-1
+LAAS_N_BATCH=512
+LAAS_N_UBATCH=512
+LAAS_FLASH_ATTN=true
+LAAS_OFFLOAD_KQV=true
+LAAS_SPECULATIVE_DECODING=false
+LAAS_SPECULATIVE_MODE=prompt_lookup
+LAAS_MTP_FILENAME=
 LAAS_IDLE_UNLOAD_SECONDS=900
 LAAS_TTS_MODEL_ID=kokoro-82m
 LAAS_TTS_HF_REPO_ID=fastrtc/kokoro-onnx
@@ -702,15 +721,15 @@ LAAS_IMAGE_EDIT_IDLE_UNLOAD_SECONDS=900
 
 ## 8. Download/Load Behavior
 
-LAAS uses `huggingface-hub` to download the configured GGUF.
+LAAS uses `huggingface-hub` to download the configured GGUF and projector.
 
 The model is downloaded when either:
 
 - `POST /v1/local/models/download` is called. By default this downloads both
   the main GGUF and `LAAS_MMPROJ_FILENAME`.
-- `POST /v1/local/models/load` is called and the configured model file is
+- `POST /v1/local/models/load` is called and a required configured file is
   missing, unless the request body sets `download_if_missing=false`.
-- The server starts with `LAAS_AUTO_LOAD=true`, the configured model file is
+- The server starts with `LAAS_AUTO_LOAD=true`, a required configured file is
   missing, and `LAAS_AUTO_DOWNLOAD=true`.
 - An inference endpoint is called while the model is unloaded; LAAS attempts to
   load the model, and that load path downloads the file only when
@@ -718,7 +737,8 @@ The model is downloaded when either:
 
 By default, `LAAS_AUTO_LOAD=false` and `LAAS_AUTO_DOWNLOAD=false`. Starting the
 API does not download or load the model until you explicitly ask it to.
-Inference requests return `model_not_downloaded` when the model file is missing.
+Inference requests return `model_not_downloaded` when a required configured file
+is missing.
 
 The embedding stack is separate from the Gemma GGUF. By default LAAS exposes
 `bge-small-en-v1.5` from `BAAI/bge-small-en-v1.5` through Sentence Transformers.
@@ -871,10 +891,8 @@ For a quick endpoint pass/fail report against a running server:
 laas compat-check --base-url http://127.0.0.1:8000
 ```
 
-Gemma 4 multimodal requests require a projector. The default Q4 main model uses
-`mmproj-gemma-4-E4B-it-Q8_0.gguf` because the repo currently publishes Q8 and
-bf16 projectors, not a Q4 projector. Set `LAAS_MMPROJ_REQUIRED=false` only for
-text-only runs.
+Gemma 4 E4B requires the configured projector for multimodal requests. The
+default projector is `mmproj-gemma-4-E4B-it-Q8_0.gguf`.
 
 Check status first:
 
@@ -992,10 +1010,10 @@ Development reload mode:
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-When launched through `laas`, startup checks the configured model path before
-the server starts. If the main model or projector file is missing, LAAS prints
-the model id, Hugging Face repo, filenames, and target paths, then asks whether
-to download the missing assets. Answer `y` or `yes` to confirm the download.
+When launched through `laas`, startup checks the configured required model path
+before the server starts. If the main model file is missing, LAAS prints the
+model id, Hugging Face repo, filename, and target path, then asks whether to
+download the missing assets. Answer `y` or `yes` to confirm the download.
 
 To download without prompting:
 
@@ -1013,7 +1031,132 @@ Direct `uvicorn` launches do not ask interactive questions. They are intended
 for service/process-manager use. Use `/v1/local/models/status` and
 `/v1/local/models/download` for manual control in that mode.
 
-## 10. Verify
+## 10. Optional Gemma 4 12B MTP Benchmark
+
+This is a research path for the non-default Gemma 4 12B profile. The default
+LAAS profile is Gemma 4 E4B with a projector and no MTP asset.
+
+`llama-cpp-python` can smoke-test Gemma 4 12B Q4_K_M, but as of the tested
+0.3.31 wheel it does not expose an external Gemma MTP GGUF draft model wrapper.
+The official native llama.cpp release does expose `draft-mtp`, so use the
+PowerShell benchmark below when checking whether the MTP asset improves local
+throughput.
+
+Windows PowerShell, NVIDIA CUDA 13-capable driver:
+
+```powershell
+.\scripts\native_llama_gemma4_mtp_benchmark.ps1
+```
+
+CUDA 12 release bundle:
+
+```powershell
+.\scripts\native_llama_gemma4_mtp_benchmark.ps1 -CudaMajor 12
+```
+
+The script:
+
+- Resolves the latest `ggml-org/llama.cpp` release with `gh`.
+- Downloads the Windows CUDA executable and matching CUDA runtime DLL bundle to
+  `D:\AI\llama.cpp`.
+- Uses the existing Gemma 4 12B Q4_K_M model and Q8_0 MTP draft model in
+  `D:\AI\Models\unsloth__gemma-4-12b-it-GGUF`.
+- Runs a short GPU-layer candidate smoke before benchmark runs.
+- Writes JSONL summaries and raw logs under
+  `D:\AI\llama.cpp\benchmarks\gemma4-12b-mtp-*`.
+
+Useful overrides:
+
+```powershell
+.\scripts\native_llama_gemma4_mtp_benchmark.ps1 `
+  -Runs 3 `
+  -MaxTokens 256 `
+  -SmokeTimeoutSeconds 240 `
+  -RunTimeoutSeconds 1200 `
+  -GpuLayerCandidates "auto,999,40,32,24,16,8,0,omit" `
+  -FlashAttention on `
+  -MtpDraftGpuLayerCandidates "999,auto,all,0,omit" `
+  -SpecDraftMax 4
+```
+
+If `auto` is not accepted by a particular native build, the script records that
+failure and tries the next candidate. Keep the resulting `results.jsonl`; it is
+the easiest way to compare baseline vs MTP throughput without re-reading the
+full generated text logs.
+
+If a candidate appears to hang during model load, lower `-SmokeTimeoutSeconds`
+or skip that candidate. For example:
+
+```powershell
+.\scripts\native_llama_gemma4_mtp_benchmark.ps1 `
+  -CudaMajor 13 `
+  -Runs 3 `
+  -MaxTokens 256 `
+  -GpuLayerCandidates "999,40,32,24,16,8,0,omit"
+```
+
+To reuse an already-downloaded native binary without asking `gh` to resolve or
+download a release:
+
+```powershell
+.\scripts\native_llama_gemma4_mtp_benchmark.ps1 `
+  -LlamaCliPath "D:\AI\llama.cpp\b9775\native\llama-cli.exe" `
+  -Tag b9775 `
+  -SkipDownload
+```
+
+If a native build changes the flash-attention CLI shape, run with
+`-FlashAttention omit` and compare after the baseline/MTP path is working.
+
+## 11. Tune Gemma 4 Context
+
+Context size, batch size, and GPU layer offload must be tuned together. A larger
+context increases KV/cache memory pressure; reducing GPU layers usually hurts
+interactive speed more than reducing batch size, so LAAS ships with a balanced
+32k E4B default and a tuner for finding the largest context that remains snappy
+on the current machine.
+
+Run this from the activated environment:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\tune_gemma4_context.py `
+  --skip-download `
+  --contexts 8192,16384,32768,49152,65536,98304,131072 `
+  --batches 1024,512,256,128 `
+  --gpu-layers all `
+  --runs 2 `
+  --max-tokens 192 `
+  --min-tokens-per-second 20
+```
+
+The tuner writes JSONL results to `D:\AI\Benchmarks` by default and prints a
+`context_tune_recommendation` event with a copy/paste `.env` block. On the
+reference RTX 3060 Ti setup, with the E4B projector loaded, the practical maximum
+passing profile was:
+
+```text
+LAAS_N_CTX=32768
+LAAS_N_GPU_LAYERS=-1
+LAAS_N_BATCH=512
+LAAS_N_UBATCH=512
+LAAS_FLASH_ATTN=true
+LAAS_OFFLOAD_KQV=true
+LAAS_SPECULATIVE_DECODING=false
+LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
+LAAS_MMPROJ_REQUIRED=true
+```
+
+That profile averaged about `39.9` completion tokens/sec in the tuner. `49152`
+context and above failed to load with full GPU offload on that machine, so the
+default centers on maximum practical context rather than absolute model context.
+
+Use `--min-tokens-per-second` to define snappy for the target machine. On a
+desktop chat endpoint, `20` is a reasonable first E4B threshold. The tuner keeps
+mapping larger contexts by default and recommends the largest passing profile.
+It loads the configured projector by default to account for multimodal memory
+overhead; add `--without-mmproj` only for text-only tuning.
+
+## 12. Verify
 
 Windows PowerShell:
 
@@ -1098,7 +1241,7 @@ python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include
 python scripts/openai_client_smoke.py --base-url http://127.0.0.1:8000 --include-image --include-image-edit --include-voice
 ```
 
-## 11. Unload
+## 13. Unload
 
 Windows PowerShell:
 

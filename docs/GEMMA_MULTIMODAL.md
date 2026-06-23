@@ -1,25 +1,25 @@
 # Gemma Multimodal Support Matrix
 
 LAAS accepts OpenAI-shaped multimodal requests, but local behavior is limited by
-the installed `llama-cpp-python` chat handler and the configured Gemma projector.
+the installed `llama-cpp-python` chat handler and the configured Gemma model.
 This page documents what is accepted, transformed, and live-smoked.
 
 ## Current Backend Finding
 
-The installed `llama-cpp-python` package exposes `Gemma4ChatHandler` through the
-MTMD projector path. Its handler recognizes `image_url` content parts. It does
-not recognize `input_audio` or native video parts. LAAS therefore treats video
-as an image-frame translation layer and rejects LLM-native audio input by
-default.
+The default Gemma 4 E4B GGUF requires the configured projector file,
+`mmproj-gemma-4-E4B-it-Q8_0.gguf`, for image and video-frame inputs. LAAS still
+treats video as an image-frame translation layer because the OpenAI API shape
+and local llama.cpp handlers are more reliable with bounded image frames than
+arbitrary video blobs.
 
 ## Matrix
 
 | Input or output | OpenAI-style shape | LAAS behavior | Backend path | Default capability |
 | --- | --- | --- | --- | --- |
 | Text input | `{"type":"text","text":"..."}` | Forwarded as text. | Gemma chat template. | `text=true` |
-| Image input | `{"type":"image_url","image_url":{"url":"..."}}` | Normalized and forwarded. | Gemma MTMD/projector image path. | `vision=true` when `LAAS_MMPROJ_REQUIRED=true` and a projector is configured. |
-| Video input | `{"type":"input_video", ...}` | Extracted into bounded JPEG image frames, then forwarded as `image_url` parts. | Gemma MTMD/projector image path after LAAS frame extraction. | `video=true` when image/projector support is configured. |
-| Audio input to LLM | `{"type":"input_audio","input_audio":{"data":"...","format":"wav"}}` | Rejected by default with an OpenAI-shaped capability error. | Not forwarded unless `LAAS_LLM_AUDIO_INPUT_ENABLED=true`. | `audio_input=false` |
+| Image input | `{"type":"image_url","image_url":{"url":"..."}}` | Normalized and forwarded. | Gemma 4 projector-backed chat path. | `vision=true` |
+| Video input | `{"type":"input_video", ...}` | Extracted into bounded JPEG image frames, then forwarded as `image_url` parts. | Gemma 4 projector-backed image path after LAAS frame extraction. | `video=true` |
+| Audio input to LLM | `{"type":"input_audio","input_audio":{"data":"...","format":"wav"}}` | Rejected by default; use explicit STT unless a verified backend supports direct LLM audio input. | Not enabled for the default E4B profile. | `audio_input=false` |
 | Speech-to-text | `/v1/audio/transcriptions` | Accepted as explicit STT. | Whisper.cpp-compatible local stack. | Separate Audio API, not LLM context input. |
 | Text-to-speech | `/v1/audio/speech` | Accepted as explicit TTS. | Kokoro local stack. | Separate Audio API, not native LLM audio output. |
 | Audio output from Chat Completions | `modalities:["audio"]` | Rejected; use `/v1/audio/speech`. | Not produced by Gemma text backend. | `audio_output=false` |

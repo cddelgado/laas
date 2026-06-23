@@ -51,8 +51,20 @@ class Settings(BaseSettings):
     auto_load: bool = False
     auto_download: bool = False
     n_ctx: int = 32768
-    n_gpu_layers: int = -1
+    n_gpu_layers: int | None = -1
     n_threads: int | None = None
+    n_threads_batch: int | None = None
+    n_batch: int | None = 512
+    n_ubatch: int | None = 512
+    flash_attn: bool = True
+    offload_kqv: bool = True
+    op_offload: bool | None = None
+    swa_full: bool | None = None
+    speculative_decoding: bool = False
+    speculative_mode: str = "prompt_lookup"
+    speculative_max_ngram_size: int = 2
+    speculative_num_pred_tokens: int = 10
+    mtp_filename: str | None = None
     verbose_llama: bool = False
     idle_unload_seconds: int = 900
     video_max_frames: int = 8
@@ -118,9 +130,31 @@ class Settings(BaseSettings):
     image_edit_idle_unload_seconds: int = 900
     settings_file: Path = DEFAULT_SETTINGS_FILE
 
-    @field_validator("image_output_dir", mode="before")
+    @field_validator(
+        "image_output_dir",
+        "mmproj_filename",
+        "mmproj_repo_id",
+        "mtp_filename",
+        mode="before",
+    )
     @classmethod
-    def _empty_path_is_none(cls, value: Any) -> Any:
+    def _empty_string_is_none(cls, value: Any) -> Any:
+        if value == "":
+            return None
+        return value
+
+    @field_validator(
+        "n_gpu_layers",
+        "n_threads",
+        "n_threads_batch",
+        "n_batch",
+        "n_ubatch",
+        "op_offload",
+        "swa_full",
+        mode="before",
+    )
+    @classmethod
+    def _empty_optional_value_is_none(cls, value: Any) -> Any:
         if value == "":
             return None
         return value
@@ -138,6 +172,12 @@ class Settings(BaseSettings):
         if not self.mmproj_filename:
             return None
         return self.model_dir / self.resolved_mmproj_repo_id.replace("/", "__") / self.mmproj_filename
+
+    @property
+    def mtp_path(self) -> Path | None:
+        if not self.mtp_filename:
+            return None
+        return self.model_dir / self.hf_repo_id.replace("/", "__") / self.mtp_filename
 
     @property
     def tts_model_path(self) -> Path:
@@ -194,6 +234,18 @@ class Settings(BaseSettings):
             "n_ctx": self.n_ctx,
             "n_gpu_layers": self.n_gpu_layers,
             "n_threads": self.n_threads,
+            "n_threads_batch": self.n_threads_batch,
+            "n_batch": self.n_batch,
+            "n_ubatch": self.n_ubatch,
+            "flash_attn": self.flash_attn,
+            "offload_kqv": self.offload_kqv,
+            "op_offload": self.op_offload,
+            "swa_full": self.swa_full,
+            "speculative_decoding": self.speculative_decoding,
+            "speculative_mode": self.speculative_mode,
+            "speculative_max_ngram_size": self.speculative_max_ngram_size,
+            "speculative_num_pred_tokens": self.speculative_num_pred_tokens,
+            "mtp_filename": self.mtp_filename,
             "idle_unload_seconds": self.idle_unload_seconds,
             "video_max_frames": self.video_max_frames,
             "video_sample_fps": self.video_sample_fps,

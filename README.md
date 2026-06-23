@@ -1,8 +1,8 @@
 # laas
 
 The Local AI API Stack is a Python OpenAI-compatible API host for local GGUF
-models. The initial target is Gemma 4 E4B Instruct with the Q4_K_M GGUF quant,
-loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
+models. The default target is Gemma 4 E4B Instruct with the Q4_K_M GGUF quant
+and the matching Q8 projector, loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 
 ## What is implemented
 
@@ -90,11 +90,10 @@ loaded from `ggml-org/gemma-4-E4B-it-GGUF`.
 
 The OpenAI-compatible endpoints accept OpenAI-style text, tool calls, image
 parts, and Responses API inputs. Gemma video input is translated to sampled
-image frames. Native LLM audio input is disabled by default because the current
-local Gemma/llama.cpp handler only proves image support; use Whisper endpoints
-for speech-to-text. If the request already supplies video `frames`, LAAS uses
-them directly; otherwise install the optional video extra so OpenCV can extract
-frames.
+image frames. The default Gemma 4 E4B profile requires the configured projector
+for image and video-frame input. If the request already supplies video `frames`,
+LAAS uses them directly; otherwise install the optional video extra so OpenCV
+can extract frames.
 
 ## Install
 
@@ -139,15 +138,13 @@ python -m pip install -r requirements-llama-cpu.txt
 NVIDIA CUDA example for PowerShell:
 
 ```powershell
-python -m pip install llama-cpp-python `
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+python -m pip install --upgrade --force-reinstall --no-cache-dir -r requirements-llama-cuda.txt
 ```
 
 NVIDIA CUDA example for macOS/Linux shells:
 
 ```bash
-python -m pip install llama-cpp-python \
-  --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+python -m pip install --upgrade --force-reinstall --no-cache-dir -r requirements-llama-cuda.txt
 ```
 
 ROCm and Vulkan options are documented in [docs/INSTALL.md](docs/INSTALL.md).
@@ -246,6 +243,15 @@ LAAS_HF_FILENAME=gemma-4-E4B-it-Q4_K_M.gguf
 LAAS_MMPROJ_FILENAME=mmproj-gemma-4-E4B-it-Q8_0.gguf
 LAAS_MMPROJ_REQUIRED=true
 LAAS_AUTO_DOWNLOAD=false
+LAAS_N_CTX=32768
+LAAS_N_GPU_LAYERS=-1
+LAAS_N_BATCH=512
+LAAS_N_UBATCH=512
+LAAS_FLASH_ATTN=true
+LAAS_OFFLOAD_KQV=true
+LAAS_SPECULATIVE_DECODING=false
+LAAS_SPECULATIVE_MODE=prompt_lookup
+LAAS_MTP_FILENAME=
 ```
 
 The default Kokoro TTS settings are:
@@ -352,10 +358,10 @@ Direct uvicorn alternative for any platform:
 python -m uvicorn laas.app:app --host 127.0.0.1 --port 8000
 ```
 
-When launched through `laas`, startup checks the configured model path before
-the server starts. If the model or projector file is missing, LAAS prints the
-model id, Hugging Face repo, filenames, and target paths, then asks whether to
-download the missing assets.
+When launched through `laas`, startup checks the configured required model path
+before the server starts. If the model file is missing, LAAS prints the model
+id, Hugging Face repo, filename, and target path, then asks whether to download
+the missing assets.
 
 To confirm from the prompt, answer `y` or `yes`.
 
@@ -409,18 +415,30 @@ curl -X POST http://127.0.0.1:8000/v1/local/models/load \
 ```
 
 If you skip the explicit download step, `POST /v1/local/models/load` downloads
-the configured model when the file is missing. Inference requests do not trigger
-a model download by default. If the model is missing, inference returns
-`model_not_downloaded` with instructions to call the local download/load
-endpoints.
+the configured model and projector when required files are missing. Inference
+requests do not trigger a model download by default. If required files are
+missing, inference returns `model_not_downloaded` with instructions to call the
+local download/load endpoints.
 
 Set `LAAS_AUTO_DOWNLOAD=true` only if you want LAAS to download a missing model
 during auto-load or first inference. With the default `LAAS_AUTO_DOWNLOAD=false`,
 downloads happen only after an explicit local download/load request.
 
-Gemma 4 multimodal requests require the projector. The default Q4 main model is
-paired with the repo's Q8 projector because the repo does not publish a Q4
-projector. For text-only experiments, set `LAAS_MMPROJ_REQUIRED=false`.
+Gemma 4 E4B requires a projector for multimodal requests. The default projector
+is `mmproj-gemma-4-E4B-it-Q8_0.gguf`.
+
+The default context profile is tuned for maximum practical context on the
+reference RTX 3060 Ti setup:
+
+```text
+LAAS_N_CTX=32768
+LAAS_N_GPU_LAYERS=-1
+LAAS_N_BATCH=512
+LAAS_N_UBATCH=512
+```
+
+Use `scripts/tune_gemma4_context.py` to find the largest context that remains
+snappy on another machine.
 
 Unload it when you are done:
 
@@ -807,15 +825,17 @@ The OpenAI-shaped realtime route also supports practical text item controls:
 `POST /v1/realtime/sessions` and `session.update` accept local-compatible
 `modalities`, `input_audio_format`, `output_audio_format`, `response_format`,
 and `turn_detection` fields. `turn_detection` is stored and returned for client
-compatibility; local server-side VAD is not implemented yet.
+compatibility; `{"type":"server_vad"}` enables a built-in energy detector for
+PCM/WAV input and can auto-commit after trailing silence.
 
 The local route replies with `response.completed` containing the same turn
 payload as the HTTP endpoint. The OpenAI-shaped route replies with a
 `realtime.response` object and includes the full local payload under
 `laas_turn`. It also emits `response.created`, output item events,
 `response.output_text.delta`, and `response.audio.delta` before the final
-completion event. With the current Kokoro backend, audio deltas are chunked from
-the completed TTS buffer rather than produced by native streaming synthesis.
+completion event. Text deltas come from backend streaming when available. With
+the current Kokoro backend, audio deltas are chunked from the completed TTS
+buffer rather than produced by native streaming synthesis.
 Both routes accept `session.update`, `input_audio_buffer.clear`,
 `response.cancel`, and `session.close` control events.
 
@@ -1024,7 +1044,6 @@ full commands and download-safety switch.
 ## Notes
 
 Gemma 4 E4B is exposed as a text-output model with text, tool-call, image,
-video-as-frames, and reasoning capabilities. Native Chat Completions audio input
-is off by default until a local backend proves support. LAAS validates request
-capabilities before sending prompts to the backend and preserves OpenAI response
-shapes where practical for local inference.
+video-as-frames, and reasoning capabilities. LAAS
+validates request capabilities before sending prompts to the backend and
+preserves OpenAI response shapes where practical for local inference.

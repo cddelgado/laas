@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import sqlite3
+import struct
 import sys
 import threading
 import time
@@ -16,7 +17,7 @@ from fastapi.testclient import TestClient
 from laas.compat_check import run_compat_check
 from laas.diagnostics import collect_diagnostics
 from laas.app import create_app
-from laas.backends import EchoBackend, _add_mmproj_kwargs
+from laas.backends import EchoBackend, _add_mmproj_kwargs, _add_speculative_kwargs, _add_supported_constructor_kwargs
 from laas.embedding import EmbeddingManager, HashEmbeddingBackend
 from laas.image import (
     DiffusersImageEditBackend,
@@ -157,6 +158,37 @@ class MessageCapturingBackend(EchoBackend):
     def chat_completion(self, **kwargs):
         self.calls.append(kwargs["messages"])
         return super().chat_completion(**kwargs)
+
+
+class SplitStreamingBackend(EchoBackend):
+    def chat_completion(self, **kwargs):
+        if not kwargs.get("stream"):
+            return super().chat_completion(**kwargs)
+        return iter(
+            [
+                {
+                    "id": "chatcmpl_split",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": kwargs["model"],
+                    "choices": [{"index": 0, "delta": {"role": "assistant", "content": "split "}, "finish_reason": None}],
+                },
+                {
+                    "id": "chatcmpl_split",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": kwargs["model"],
+                    "choices": [{"index": 0, "delta": {"content": "stream"}, "finish_reason": None}],
+                },
+                {
+                    "id": "chatcmpl_split",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": kwargs["model"],
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                },
+            ]
+        )
 
 
 class StreamingToolBackend(EchoBackend):
@@ -409,6 +441,7 @@ def make_voice_client(
     *,
     write_audio_assets: bool = True,
     write_transcription_model: bool = True,
+    text_backend: EchoBackend | None = None,
 ) -> tuple[TestClient, FakeAudioBackend, FakeTranscriptionBackend]:
     settings = Settings(
         model_dir=tmp_path,
@@ -419,7 +452,7 @@ def make_voice_client(
         stt_idle_unload_seconds=0,
         tts_voices_filename="voices.json",
     )
-    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: text_backend or EchoBackend())
     audio_backend = FakeAudioBackend()
     transcription_backend = FakeTranscriptionBackend()
     audio_manager = AudioManager(settings, backend_factory=lambda model_path, voices_path, active_settings: audio_backend)
@@ -673,6 +706,7 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     assert status["configured_model"] == "gemma-4-e4b-it-q4_k_m"
     assert status["downloaded"] is True
     assert status["mmproj_downloaded"] is True
+    assert status["mmproj_required"] is True
     assert status["is_loaded"] is False
     assert status["capabilities"]["vision"] is True
     assert status["capabilities"]["video"] is True
@@ -3049,6 +3083,90 @@ def test_openai_realtime_conversation_item_create_rejects_audio_content(tmp_path
         assert "input_audio_buffer.append" in error["error"]["message"]
 
 
+def test_openai_realtime_server_vad_auto_commits_pcm_audio(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path)
+    session = client.post(
+        "/v1/realtime/sessions",
+        json={
+            "voice": "alloy",
+            "response_format": "pcm",
+            "input_audio_format": "pcm",
+            "turn_detection": {"type": "server_vad", "threshold": 0.5, "silence_duration_ms": 60, "frame_ms": 30},
+        },
+    ).json()
+    speech = struct.pack("<" + "h" * 2400, *([12000] * 2400))
+    silence = struct.pack("<" + "h" * 2400, *([0] * 2400))
+
+    with client.websocket_connect(f"/v1/realtime/sessions/{session['id']}") as websocket:
+        assert websocket.receive_json()["type"] == "session.created"
+
+        websocket.send_json({"type": "input_audio_buffer.append", "audio": base64.b64encode(speech).decode("ascii")})
+        assert websocket.receive_json()["type"] == "input_audio_buffer.appended"
+        speech_started = websocket.receive_json()
+        assert speech_started["type"] == "input_audio_buffer.speech_started"
+
+        websocket.send_json({"type": "input_audio_buffer.append", "audio": base64.b64encode(silence).decode("ascii")})
+        assert websocket.receive_json()["type"] == "input_audio_buffer.appended"
+        speech_stopped = websocket.receive_json()
+        assert speech_stopped["type"] == "input_audio_buffer.speech_stopped"
+        committed = websocket.receive_json()
+        assert committed["type"] == "input_audio_buffer.committed"
+        assert committed["buffer_bytes"] == len(speech) + len(silence)
+        assert websocket.receive_json()["type"] == "response.created"
+
+        while True:
+            event = websocket.receive_json()
+            if event["type"] == "response.completed":
+                assert event["laas_turn"]["transcript"]["text"] == "hello from whisper"
+                break
+
+        websocket.send_json({"type": "session.close"})
+        assert websocket.receive_json()["type"] == "session.closed"
+
+    assert transcription_backend.calls[0]["translate"] is False
+    assert audio_backend.calls[0]["text"] == "hello from whisper"
+
+
+def test_openai_realtime_uses_backend_text_stream_deltas(tmp_path: Path) -> None:
+    client, audio_backend, transcription_backend = make_voice_client(tmp_path, text_backend=SplitStreamingBackend())
+    session = client.post("/v1/realtime/sessions", json={"voice": "alloy", "response_format": "pcm"}).json()
+
+    with client.websocket_connect(f"/v1/realtime/sessions/{session['id']}") as websocket:
+        assert websocket.receive_json()["type"] == "session.created"
+        websocket.send_json(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "ignored by split backend"}],
+                },
+            }
+        )
+        assert websocket.receive_json()["type"] == "conversation.item.created"
+        websocket.send_json({"type": "response.create"})
+        assert websocket.receive_json()["type"] == "response.created"
+        assert websocket.receive_json()["type"] == "response.output_item.added"
+        first_delta = websocket.receive_json()
+        second_delta = websocket.receive_json()
+        assert first_delta["type"] == "response.output_text.delta"
+        assert first_delta["delta"] == "split "
+        assert second_delta["type"] == "response.output_text.delta"
+        assert second_delta["delta"] == "stream"
+        done = websocket.receive_json()
+        assert done["type"] == "response.output_text.done"
+        assert done["text"] == "split stream"
+
+        while True:
+            event = websocket.receive_json()
+            if event["type"] == "response.completed":
+                assert event["laas_turn"]["response"]["text"] == "split stream"
+                break
+
+    assert transcription_backend.calls == []
+    assert audio_backend.calls[0]["text"] == "split stream"
+
+
 def test_patch_model_directory_setting(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     target = tmp_path / "models"
@@ -3223,6 +3341,63 @@ def test_backend_mmproj_kwargs_fail_without_support(tmp_path: Path) -> None:
         _add_mmproj_kwargs(TextOnly, {"model_path": "model.gguf"}, tmp_path / "mmproj.gguf")
     except RuntimeError as exc:
         assert "multimodal projector" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError")
+
+
+def test_backend_supported_constructor_kwargs_are_mapped() -> None:
+    class SupportsBatch:
+        def __init__(
+            self,
+            model_path: str,
+            n_gpu_layers: int,
+            n_batch: int,
+            n_ubatch: int,
+            n_threads_batch: int,
+            flash_attn: bool,
+            offload_kqv: bool,
+        ) -> None:
+            pass
+
+    kwargs = {"model_path": "model.gguf"}
+    _add_supported_constructor_kwargs(
+        SupportsBatch,
+        kwargs,
+        {
+            "n_gpu_layers": None,
+            "n_batch": 512,
+            "n_ubatch": 256,
+            "n_threads_batch": 8,
+            "flash_attn": True,
+            "offload_kqv": True,
+            "swa_full": None,
+        },
+    )
+
+    assert "n_gpu_layers" not in kwargs
+    assert kwargs["n_batch"] == 512
+    assert kwargs["n_ubatch"] == 256
+    assert kwargs["n_threads_batch"] == 8
+    assert kwargs["flash_attn"] is True
+    assert kwargs["offload_kqv"] is True
+    assert "swa_full" not in kwargs
+
+
+def test_backend_speculative_kwargs_reject_external_mtp_mode() -> None:
+    class SupportsDraft:
+        def __init__(self, model_path: str, draft_model: object | None = None) -> None:
+            pass
+
+    try:
+        _add_speculative_kwargs(
+            SupportsDraft,
+            {"model_path": "model.gguf"},
+            mode="mtp",
+            max_ngram_size=2,
+            num_pred_tokens=10,
+        )
+    except RuntimeError as exc:
+        assert "External Gemma MTP GGUF" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
 

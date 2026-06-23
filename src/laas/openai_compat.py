@@ -75,7 +75,7 @@ COMPATIBILITY_MATRIX: list[dict[str, Any]] = [
             "WS /v1/realtime/sessions/{session_id}",
             "WS /v1/local/voice/sessions/{session_id}/realtime",
         ],
-        "notes": "OpenAI-shaped local realtime wrapper plus stable LAAS local voice transport over Kokoro, Whisper, and Gemma.",
+        "notes": "OpenAI-shaped local realtime wrapper plus stable LAAS local voice transport with text item controls, backend text stream deltas, and built-in PCM/WAV server VAD.",
     },
     {
         "surface": "Files",

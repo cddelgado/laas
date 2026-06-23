@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Iterable
 
+from .native import configure_native_dll_directories
 from .tools import parse_tool_calls, remove_tool_call_markup, selected_tool_name, tool_name
 
 
@@ -51,11 +52,23 @@ class LlamaCppBackend(InferenceBackend):
         *,
         model_path: Path,
         n_ctx: int,
-        n_gpu_layers: int,
+        n_gpu_layers: int | None,
         n_threads: int | None,
+        n_threads_batch: int | None,
+        n_batch: int | None,
+        n_ubatch: int | None,
+        flash_attn: bool,
+        offload_kqv: bool,
+        op_offload: bool | None,
+        swa_full: bool | None,
+        speculative_decoding: bool,
+        speculative_mode: str,
+        speculative_max_ngram_size: int,
+        speculative_num_pred_tokens: int,
         verbose: bool,
         mmproj_path: Path | None = None,
     ) -> None:
+        configure_native_dll_directories()
         try:
             from llama_cpp import Llama
         except Exception as exc:
@@ -64,11 +77,31 @@ class LlamaCppBackend(InferenceBackend):
         kwargs: dict[str, Any] = {
             "model_path": str(model_path),
             "n_ctx": n_ctx,
-            "n_gpu_layers": n_gpu_layers,
             "verbose": verbose,
         }
-        if n_threads:
-            kwargs["n_threads"] = n_threads
+        _add_supported_constructor_kwargs(
+            Llama,
+            kwargs,
+            {
+                "n_gpu_layers": n_gpu_layers,
+                "n_threads": n_threads,
+                "n_threads_batch": n_threads_batch,
+                "n_batch": n_batch,
+                "n_ubatch": n_ubatch,
+                "flash_attn": flash_attn,
+                "offload_kqv": offload_kqv,
+                "op_offload": op_offload,
+                "swa_full": swa_full,
+            },
+        )
+        if speculative_decoding:
+            _add_speculative_kwargs(
+                Llama,
+                kwargs,
+                mode=speculative_mode,
+                max_ngram_size=speculative_max_ngram_size,
+                num_pred_tokens=speculative_num_pred_tokens,
+            )
         if mmproj_path:
             _add_mmproj_kwargs(
                 Llama,
@@ -283,4 +316,43 @@ def _add_mmproj_kwargs(
         "llama-cpp-python Llama constructor does not expose mmproj/mmproj_path/clip_model_path/chat_handler. "
         "Install a llama-cpp-python build with multimodal projector support or set "
         "LAAS_MMPROJ_REQUIRED=false for text-only use."
+    )
+
+
+def _add_supported_constructor_kwargs(
+    llama_cls: Any,
+    kwargs: dict[str, Any],
+    candidates: dict[str, Any],
+) -> None:
+    parameters = inspect.signature(llama_cls).parameters
+    for name, value in candidates.items():
+        if value is None:
+            continue
+        if name in parameters:
+            kwargs[name] = value
+
+
+def _add_speculative_kwargs(
+    llama_cls: Any,
+    kwargs: dict[str, Any],
+    *,
+    mode: str,
+    max_ngram_size: int,
+    num_pred_tokens: int,
+) -> None:
+    parameters = inspect.signature(llama_cls).parameters
+    if "draft_model" not in parameters:
+        raise RuntimeError("Installed llama-cpp-python does not expose draft_model speculative decoding support.")
+    if mode != "prompt_lookup":
+        raise RuntimeError(
+            "Only prompt_lookup speculative decoding is supported through llama-cpp-python in LAAS. "
+            "External Gemma MTP GGUF draft models are tracked as assets but are not exposed by this binding."
+        )
+    try:
+        from llama_cpp.llama_speculative import LlamaPromptLookupDecoding
+    except Exception as exc:
+        raise RuntimeError("Installed llama-cpp-python does not expose LlamaPromptLookupDecoding.") from exc
+    kwargs["draft_model"] = LlamaPromptLookupDecoding(
+        max_ngram_size=max_ngram_size,
+        num_pred_tokens=num_pred_tokens,
     )

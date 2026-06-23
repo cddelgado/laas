@@ -76,6 +76,10 @@ def confirm_missing_model_downloads(
         output_fn(f"  mmproj:   {settings.mmproj_filename}")
         output_fn(f"  mmrepo:   {settings.resolved_mmproj_repo_id}")
         output_fn(f"  mmpath:   {mmproj_path} ({'present' if mmproj_path and mmproj_path.exists() else 'missing'})")
+    if settings.mtp_filename:
+        mtp_path = settings.mtp_path
+        output_fn(f"  mtp:      {settings.mtp_filename}")
+        output_fn(f"  mtppath:  {mtp_path} ({'present' if mtp_path and mtp_path.exists() else 'missing'})")
 
     should_download = assume_yes
     if not should_download and prompt:
@@ -88,7 +92,7 @@ def confirm_missing_model_downloads(
         return []
 
     output_fn("Downloading missing configured model assets...")
-    downloaded = ModelManager(settings).download_configured_assets(include_mmproj=True)
+    downloaded = ModelManager(settings).download_configured_assets(include_mmproj=True, include_mtp=True)
     for path in downloaded:
         output_fn(f"Downloaded: {path}")
     return downloaded

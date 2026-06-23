@@ -7,3 +7,4 @@ build/
 *.egg-info/
 .env
 .laas/
+.tmp-llama-bench/

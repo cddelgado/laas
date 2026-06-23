@@ -55,6 +55,7 @@ class ModelManager:
     def status(self) -> LocalModelStatus:
         path = self.settings.model_path
         mmproj_path = self.settings.mmproj_path
+        mtp_path = self.settings.mtp_path
         with self._lock:
             self._unload_if_idle_locked()
             return LocalModelStatus(
@@ -66,6 +67,13 @@ class ModelManager:
                 mmproj_path=str(mmproj_path) if mmproj_path else None,
                 mmproj_downloaded=bool(mmproj_path and mmproj_path.exists()),
                 mmproj_required=self.settings.mmproj_required,
+                mtp_path=str(mtp_path) if mtp_path else None,
+                mtp_downloaded=bool(mtp_path and mtp_path.exists()),
+                n_gpu_layers=self.settings.n_gpu_layers,
+                n_batch=self.settings.n_batch,
+                n_ubatch=self.settings.n_ubatch,
+                speculative_decoding=self.settings.speculative_decoding,
+                speculative_mode=self.settings.speculative_mode,
                 capabilities=self.capabilities,
                 idle_unload_seconds=self.settings.idle_unload_seconds,
                 last_used_at=self._last_used_at,
@@ -94,12 +102,24 @@ class ModelManager:
             filename=self.settings.mmproj_filename,
         )
 
-    def download_configured_assets(self, *, include_mmproj: bool = True) -> list[Path]:
+    def download_mtp(self) -> Path | None:
+        if not self.settings.mtp_filename:
+            return None
+        return self.download_file(
+            repo_id=self.settings.hf_repo_id,
+            filename=self.settings.mtp_filename,
+        )
+
+    def download_configured_assets(self, *, include_mmproj: bool = True, include_mtp: bool = True) -> list[Path]:
         downloaded = [self.download()]
         if include_mmproj and self.settings.mmproj_filename:
             mmproj = self.download_mmproj()
             if mmproj:
                 downloaded.append(mmproj)
+        if include_mtp and self.settings.mtp_filename:
+            mtp = self.download_mtp()
+            if mtp:
+                downloaded.append(mtp)
         return downloaded
 
     def missing_required_paths(self) -> list[tuple[str, Path]]:
@@ -188,6 +208,17 @@ class ModelManager:
             n_ctx=settings.n_ctx,
             n_gpu_layers=settings.n_gpu_layers,
             n_threads=settings.n_threads,
+            n_threads_batch=settings.n_threads_batch,
+            n_batch=settings.n_batch,
+            n_ubatch=settings.n_ubatch,
+            flash_attn=settings.flash_attn,
+            offload_kqv=settings.offload_kqv,
+            op_offload=settings.op_offload,
+            swa_full=settings.swa_full,
+            speculative_decoding=settings.speculative_decoding,
+            speculative_mode=settings.speculative_mode,
+            speculative_max_ngram_size=settings.speculative_max_ngram_size,
+            speculative_num_pred_tokens=settings.speculative_num_pred_tokens,
             verbose=settings.verbose_llama,
             mmproj_path=settings.mmproj_path if settings.mmproj_required else None,
         )
@@ -195,8 +226,9 @@ class ModelManager:
 
 def capabilities_from_settings(settings: Settings) -> ModelCapabilities:
     multimodal_projector_configured = bool(settings.mmproj_required and settings.mmproj_filename)
+    unified_multimodal = not settings.mmproj_required
     return ModelCapabilities(
-        vision=multimodal_projector_configured,
-        video=multimodal_projector_configured,
+        vision=unified_multimodal or multimodal_projector_configured,
+        video=unified_multimodal or multimodal_projector_configured,
         audio_input=settings.llm_audio_input_enabled,
     )

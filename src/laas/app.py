@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import io
 import os
+import struct
 import tempfile
 import time
 import uuid
+import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -230,8 +233,15 @@ def create_app(
                 mmproj = active_manager.download_mmproj()
                 if mmproj:
                     paths.append(mmproj)
+            if request.include_mtp and not request.filename:
+                mtp = active_manager.download_mtp()
+                if mtp:
+                    paths.append(mtp)
         else:
-            paths = active_manager.download_configured_assets(include_mmproj=request.include_mmproj)
+            paths = active_manager.download_configured_assets(
+                include_mmproj=request.include_mmproj,
+                include_mtp=request.include_mtp,
+            )
         return {
             "model_id": request.model_id or active_settings.model_id,
             "paths": [str(path) for path in paths],
@@ -719,6 +729,25 @@ def create_app(
             for message in messages
         ]
 
+    def _realtime_text_delta_from_chunk(chunk: Any) -> str:
+        if not isinstance(chunk, dict):
+            return str(chunk)
+        choices = chunk.get("choices") or []
+        if not choices:
+            return ""
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        delta = choice.get("delta") or {}
+        if isinstance(delta, dict):
+            content = delta.get("content")
+            if content is not None:
+                return str(content)
+            message = delta.get("message")
+            if isinstance(message, dict) and message.get("content") is not None:
+                return str(message["content"])
+        if choice.get("text") is not None:
+            return str(choice["text"])
+        return ""
+
     def _run_voice_response(
         session: dict[str, Any],
         *,
@@ -727,23 +756,44 @@ def create_app(
         response_format: str | None = None,
         voice: str | None = None,
         speed: float | None = None,
+        stream_text: bool = False,
     ) -> dict[str, Any]:
         messages = [*session["messages"]]
         if user_message is not None:
             messages.append(user_message)
-        chat_result = active_manager.backend.chat_completion(
-            messages=_backend_messages(messages),
-            model=active_settings.model_id,
-            tools=None,
-            tool_choice="none",
-            temperature=1.0,
-            top_p=1.0,
-            max_tokens=None,
-            stream=False,
-            extra_params={},
-        )
-        chat_response = _normalize_chat_response(chat_result, active_settings.model_id, None)
-        assistant_text = chat_response["choices"][0]["message"].get("content") or ""
+        text_deltas: list[str] = []
+        if stream_text:
+            chat_stream = active_manager.backend.chat_completion(
+                messages=_backend_messages(messages),
+                model=active_settings.model_id,
+                tools=None,
+                tool_choice="none",
+                temperature=1.0,
+                top_p=1.0,
+                max_tokens=None,
+                stream=True,
+                extra_params={},
+            )
+            for chunk in chat_stream:
+                delta = _realtime_text_delta_from_chunk(chunk)
+                if delta:
+                    text_deltas.append(delta)
+            assistant_text = "".join(text_deltas)
+        else:
+            chat_result = active_manager.backend.chat_completion(
+                messages=_backend_messages(messages),
+                model=active_settings.model_id,
+                tools=None,
+                tool_choice="none",
+                temperature=1.0,
+                top_p=1.0,
+                max_tokens=None,
+                stream=False,
+                extra_params={},
+            )
+            chat_response = _normalize_chat_response(chat_result, active_settings.model_id, None)
+            assistant_text = chat_response["choices"][0]["message"].get("content") or ""
+            text_deltas = [assistant_text] if assistant_text else []
         assistant_message = {"role": "assistant", "content": assistant_text}
         speech = active_audio_manager.synthesize(
             text=assistant_text,
@@ -781,6 +831,8 @@ def create_app(
                 "sample_rate": speech.sample_rate,
             },
         }
+        if text_deltas:
+            turn["response"]["text_deltas"] = text_deltas
         session["turns"].append(turn)
         return turn
 
@@ -794,6 +846,7 @@ def create_app(
         prompt: str | None = None,
         temperature: float | None = None,
         speed: float | None = None,
+        stream_text: bool = False,
     ) -> dict[str, Any]:
         transcript = active_transcription_manager.transcribe(
             media_path=media_path,
@@ -823,6 +876,7 @@ def create_app(
             response_format=response_format,
             voice=voice,
             speed=speed,
+            stream_text=stream_text,
         )
 
     @app.post("/v1/local/voice/sessions/{session_id}/turns")
@@ -1039,6 +1093,116 @@ def create_app(
     def _can_create_text_only_realtime_response(session: dict[str, Any]) -> bool:
         return any(message.get("role") == "user" for message in session.get("messages", []))
 
+    def _realtime_vad_config(session: dict[str, Any]) -> dict[str, Any] | None:
+        config = session.get("turn_detection")
+        if not isinstance(config, dict) or config.get("type") != "server_vad":
+            return None
+        return {
+            "threshold": float(config.get("threshold", 0.5)),
+            "silence_duration_ms": int(config.get("silence_duration_ms", 500)),
+            "frame_ms": int(config.get("frame_ms", 30)),
+        }
+
+    def _pcm16_samples_from_bytes(content: bytes, audio_format: str) -> tuple[list[int], int]:
+        if not content:
+            return [], 24000
+        if audio_format == "wav":
+            try:
+                with wave.open(io.BytesIO(content), "rb") as wav:
+                    channels = wav.getnchannels()
+                    sample_rate = wav.getframerate()
+                    sample_width = wav.getsampwidth()
+                    frames = wav.readframes(wav.getnframes())
+            except Exception:
+                return [], 24000
+            if sample_width != 2:
+                return [], sample_rate
+            raw_samples = struct.unpack("<" + "h" * (len(frames) // 2), frames)
+            if channels <= 1:
+                return list(raw_samples), sample_rate
+            return [raw_samples[index] for index in range(0, len(raw_samples), channels)], sample_rate
+        if audio_format != "pcm" or len(content) < 2:
+            return [], 24000
+        trimmed = content[: len(content) - (len(content) % 2)]
+        return list(struct.unpack("<" + "h" * (len(trimmed) // 2), trimmed)), 24000
+
+    def _pcm16_bytes_to_wav(content: bytes, sample_rate: int = 24000) -> bytes:
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(content[: len(content) - (len(content) % 2)])
+        return buffer.getvalue()
+
+    def _realtime_vad_frames(
+        content: bytes,
+        audio_format: str,
+        frame_ms: int,
+        threshold: float,
+    ) -> list[tuple[bool, int]]:
+        samples, sample_rate = _pcm16_samples_from_bytes(content, audio_format)
+        if not samples:
+            return []
+        samples_per_frame = max(1, int(sample_rate * frame_ms / 1000))
+        frames: list[tuple[bool, int]] = []
+        for index in range(0, len(samples), samples_per_frame):
+            frame = samples[index : index + samples_per_frame]
+            if not frame:
+                continue
+            rms = (sum(sample * sample for sample in frame) / len(frame)) ** 0.5 / 32768.0
+            frames.append((rms >= threshold, int(len(frame) / sample_rate * 1000)))
+        return frames
+
+    def _update_realtime_vad(session: dict[str, Any], chunk: bytes) -> tuple[list[dict[str, Any]], bool]:
+        config = _realtime_vad_config(session)
+        if config is None:
+            return [], False
+        state = session.setdefault(
+            "vad_state",
+            {"in_speech": False, "speech_seen": False, "silence_ms": 0, "processed_ms": 0},
+        )
+        threshold = max(0.002, min(1.0, config["threshold"]) * 0.02)
+        frames = _realtime_vad_frames(
+            chunk,
+            session.get("input_audio_format", "wav"),
+            config["frame_ms"],
+            threshold,
+        )
+        events: list[dict[str, Any]] = []
+        should_commit = False
+        for is_speech, duration_ms in frames:
+            if is_speech:
+                if not state["in_speech"]:
+                    events.append(
+                        {
+                            "type": "input_audio_buffer.speech_started",
+                            "session_id": session["id"],
+                            "audio_start_ms": state["processed_ms"],
+                        }
+                    )
+                state["in_speech"] = True
+                state["speech_seen"] = True
+                state["silence_ms"] = 0
+            elif state["in_speech"]:
+                state["silence_ms"] += duration_ms
+                if state["silence_ms"] >= config["silence_duration_ms"]:
+                    events.append(
+                        {
+                            "type": "input_audio_buffer.speech_stopped",
+                            "session_id": session["id"],
+                            "audio_end_ms": state["processed_ms"],
+                        }
+                    )
+                    state["in_speech"] = False
+                    should_commit = True
+                    break
+            state["processed_ms"] += duration_ms
+        return events, should_commit
+
+    def _reset_realtime_vad(session: dict[str, Any]) -> None:
+        session["vad_state"] = {"in_speech": False, "speech_seen": False, "silence_ms": 0, "processed_ms": 0}
+
     def _completed_realtime_event(
         *,
         session_id: str,
@@ -1124,7 +1288,10 @@ def create_app(
             }
         )
         text = turn_payload["response"]["text"]
-        if text:
+        text_deltas = turn_payload["response"].get("text_deltas") or ([text] if text else [])
+        for delta in text_deltas:
+            if not delta:
+                continue
             await websocket.send_json(
                 {
                     "type": "response.output_text.delta",
@@ -1132,9 +1299,10 @@ def create_app(
                     "item_id": item_id,
                     "output_index": 0,
                     "content_index": 0,
-                    "delta": text,
+                    "delta": delta,
                 }
             )
+        if text:
             await websocket.send_json(
                 {
                     "type": "response.output_text.done",
@@ -1204,7 +1372,12 @@ def create_app(
         if not audio_bytes:
             await websocket.send_json({"type": "error", "error": {"message": "audio buffer is empty", "code": "empty_audio"}})
             return
-        media_path = _bytes_to_temp_file(audio_bytes, filename=event.get("filename"))
+        filename = event.get("filename")
+        media_bytes = audio_bytes
+        if not filename and session.get("input_audio_format") == "pcm":
+            media_bytes = _pcm16_bytes_to_wav(audio_bytes)
+            filename = "input.wav"
+        media_path = _bytes_to_temp_file(media_bytes, filename=filename)
         turn_payload: dict[str, Any] | None = None
         response_id = f"resp_{uuid.uuid4().hex}" if openai_shape else None
         if response_id:
@@ -1232,6 +1405,7 @@ def create_app(
                 prompt=event.get("prompt"),
                 temperature=event.get("temperature"),
                 speed=event.get("speed"),
+                stream_text=openai_shape,
             )
         except Exception as exc:
             await websocket.send_json({"type": "error", "error": {"message": str(exc), "code": "voice_turn_failed"}})
@@ -1284,6 +1458,7 @@ def create_app(
                 response_format=event.get("response_format"),
                 voice=event.get("voice"),
                 speed=event.get("speed"),
+                stream_text=openai_shape,
             )
         except Exception as exc:
             await websocket.send_json({"type": "error", "error": {"message": str(exc), "code": "voice_turn_failed"}})
@@ -1359,6 +1534,7 @@ def create_app(
                     continue
                 if event_type == "input_audio_buffer.clear":
                     audio_buffer.clear()
+                    _reset_realtime_vad(session)
                     await websocket.send_json({"type": "input_audio_buffer.cleared", "session_id": session_id})
                     continue
                 if event_type == "conversation.item.create":
@@ -1429,6 +1605,28 @@ def create_app(
                             "buffer_bytes": len(audio_buffer),
                         }
                     )
+                    vad_events, should_commit = _update_realtime_vad(session, base64.b64decode(event.get("audio", "")))
+                    for vad_event in vad_events:
+                        await websocket.send_json(vad_event)
+                    if should_commit:
+                        audio_bytes = bytes(audio_buffer)
+                        audio_buffer.clear()
+                        _reset_realtime_vad(session)
+                        await websocket.send_json(
+                            {
+                                "type": "input_audio_buffer.committed",
+                                "session_id": session_id,
+                                "buffer_bytes": len(audio_bytes),
+                            }
+                        )
+                        await _run_realtime_voice_turn(
+                            websocket=websocket,
+                            session=session,
+                            session_id=session_id,
+                            audio_bytes=audio_bytes,
+                            event=event,
+                            openai_shape=openai_shape,
+                        )
                     continue
                 if event_type in {"input_audio_buffer.commit", "voice.turn", "response.create"}:
                     if event_type == "voice.turn":

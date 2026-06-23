@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .native import configure_native_dll_directories
 from .settings import Settings
 from .tts import resolve_ffmpeg_path
 
@@ -60,6 +61,7 @@ def collect_diagnostics(settings: Settings) -> dict[str, Any]:
         "packages": packages,
         "ffmpeg": ffmpeg_status(settings.tts_ffmpeg_path),
         "torch": torch_status(packages["torch"]["available"]),
+        "llama_cpp": llama_cpp_status(packages["llama_cpp"]["available"]),
         "models": model_path_status(settings),
     }
     report["actions"] = diagnostic_actions(report)
@@ -163,10 +165,60 @@ def torch_status(torch_available: bool) -> dict[str, Any]:
     return status
 
 
+def llama_cpp_status(llama_cpp_available: bool) -> dict[str, Any]:
+    status: dict[str, Any] = {
+        "available": llama_cpp_available,
+        "version": None,
+        "n_batch": False,
+        "n_ubatch": False,
+        "n_threads_batch": False,
+        "draft_model": False,
+        "prompt_lookup_speculative": False,
+        "external_mtp_draft_model": False,
+        "flash_attn": False,
+        "offload_kqv": False,
+        "op_offload": False,
+        "swa_full": False,
+        "added_dll_directories": [],
+        "error": None,
+    }
+    if not llama_cpp_available:
+        return status
+    try:
+        import inspect
+
+        added_dll_directories = configure_native_dll_directories()
+        llama_cpp = importlib.import_module("llama_cpp")
+        llama_cls = getattr(llama_cpp, "Llama")
+        parameters = inspect.signature(llama_cls).parameters
+        status["version"] = getattr(llama_cpp, "__version__", importlib.metadata.version("llama-cpp-python"))
+        status["added_dll_directories"] = added_dll_directories
+        for name in [
+            "n_batch",
+            "n_ubatch",
+            "n_threads_batch",
+            "draft_model",
+            "flash_attn",
+            "offload_kqv",
+            "op_offload",
+            "swa_full",
+        ]:
+            status[name] = name in parameters
+        try:
+            importlib.import_module("llama_cpp.llama_speculative").LlamaPromptLookupDecoding
+            status["prompt_lookup_speculative"] = True
+        except Exception:
+            status["prompt_lookup_speculative"] = False
+    except Exception as exc:
+        status["error"] = str(exc)
+    return status
+
+
 def model_path_status(settings: Settings) -> dict[str, Any]:
     return {
         "text": file_model_status(settings.model_id, settings.model_path),
         "mmproj": file_model_status(settings.mmproj_filename or "", settings.mmproj_path),
+        "mtp": file_model_status(settings.mtp_filename or "", settings.mtp_path),
         "embeddings": directory_model_status(settings.embedding_model_id, settings.embedding_model_path),
         "images": directory_model_status(settings.image_model_id, settings.image_model_path),
         "image_edit": directory_model_status(settings.image_edit_model_id, settings.image_edit_model_path),

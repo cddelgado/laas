@@ -79,7 +79,7 @@ WebSocket.
 | `conversation.item.retrieve` | Supported text subset | Returns a stored text conversation item by `item_id`. |
 | `conversation.item.delete` | Supported text subset | Removes a stored text conversation item from the visible item list and backend chat history. |
 | `conversation.item.truncate` | Supported text subset | Truncates a stored text content part by `text_end_index`, replaces it with `text`, or acknowledges `audio_end_ms` as a no-op for text items. |
-| `input_audio_buffer.append` | Supported | Appends base64 audio bytes to the current buffer. Replies with `input_audio_buffer.appended`. |
+| `input_audio_buffer.append` | Supported | Appends base64 audio bytes to the current buffer. Replies with `input_audio_buffer.appended`. With `turn_detection.type=server_vad`, may also emit speech start/stop events and auto-commit. |
 | `input_audio_buffer.clear` | Supported | Clears the current audio buffer. Replies with `input_audio_buffer.cleared`. |
 | `input_audio_buffer.commit` | Supported | Runs one full local voice turn from buffered audio. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
 | `response.create` | Supported as alias | Runs one full local voice turn from buffered audio, or from accumulated text `conversation.item.create` messages when no audio is buffered. The local route replies with `response.completed`; the OpenAI-shaped route emits lifecycle, text, and audio events before `response.completed`. |
@@ -159,7 +159,32 @@ subset of OpenAI-shaped session fields:
 - `output_audio_format` / `response_format`: `pcm`, `wav`, `mp3`, `flac`,
   `opus`, or `aac`
 - `turn_detection`: stored and returned for client compatibility, but local
-  server-side VAD is not implemented yet
+  server-side VAD currently uses a built-in energy detector for PCM/WAV input
+
+## Server VAD
+
+When `turn_detection` is set to `{"type":"server_vad"}`, LAAS inspects appended
+PCM or WAV audio with a lightweight local energy detector. It supports these
+optional fields:
+
+- `threshold`: speech energy threshold, default `0.5`
+- `silence_duration_ms`: trailing silence before auto-commit, default `500`
+- `frame_ms`: analysis frame size, default `30`
+
+The realtime socket can emit:
+
+```text
+input_audio_buffer.speech_started
+input_audio_buffer.speech_stopped
+input_audio_buffer.committed
+```
+
+After `input_audio_buffer.committed`, LAAS runs the normal local voice turn and
+emits the existing response event stream. Manual `input_audio_buffer.commit`
+continues to work when VAD is disabled or when a client wants explicit control.
+
+For `input_audio_format: "pcm"`, LAAS wraps the buffered PCM16 mono audio in a
+temporary WAV container before calling Whisper.
 
 ## Output Event
 
@@ -198,10 +223,12 @@ response.output_item.done
 response.completed
 ```
 
-`response.audio.delta` contains base64-encoded chunks of the final encoded
-audio. With the current Kokoro backend, LAAS emits these chunks after TTS
-returns a whole buffer. The event shape is streaming-compatible, but it is not
-yet true low-latency chunk synthesis.
+`response.output_text.delta` is emitted from backend text stream chunks when the
+local LLM backend supports streaming. `response.audio.delta` contains
+base64-encoded chunks of the final encoded audio. With the current Kokoro
+backend, LAAS emits audio chunks after TTS returns a whole buffer. The event
+shape is streaming-compatible, but it is not yet true low-latency chunk
+synthesis.
 
 The final `response.completed` event contains a `realtime.response` wrapper and
 keeps the full LAAS turn payload in `laas_turn`:
@@ -267,7 +294,6 @@ The following are intentionally out of scope for the current local bridge:
 
 - WebRTC transport
 - Hosted ephemeral token/session APIs
-- Server-side VAD
 - Native chunk-by-chunk TTS generation before the local TTS backend returns
 - Native LLM audio input/output
 - Tool calls over Realtime
