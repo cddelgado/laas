@@ -127,6 +127,8 @@ class DiffusersWanVideoBackend(VideoBackend):
             subfolder="transformer",
             torch_dtype=dtype,
         )
+        if hasattr(transformer, "config"):
+            transformer.config.image_dim = None
         transformer_2 = WanTransformer3DModel.from_single_file(
             str(self.settings.video_generation_low_noise_path),
             quantization_config=quantization_config,
@@ -134,6 +136,8 @@ class DiffusersWanVideoBackend(VideoBackend):
             subfolder="transformer_2",
             torch_dtype=dtype,
         )
+        if hasattr(transformer_2, "config"):
+            transformer_2.config.image_dim = None
         vae = AutoencoderKLWan.from_pretrained(
             str(base_path),
             subfolder="vae",
@@ -144,6 +148,7 @@ class DiffusersWanVideoBackend(VideoBackend):
             transformer=transformer,
             transformer_2=transformer_2,
             vae=vae,
+            boundary_ratio=self.settings.video_generation_boundary_ratio,
             torch_dtype=dtype,
         )
         if device == "cuda" and self.settings.video_generation_enable_model_cpu_offload:
@@ -189,6 +194,11 @@ class DiffusersWanVideoBackend(VideoBackend):
             num_frames=num_frames,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
+            guidance_scale_2=(
+                self.settings.video_generation_guidance_scale_2
+                if self.settings.video_generation_guidance_scale_2 is not None
+                else guidance_scale
+            ),
             generator=generator,
         ).frames[0]
         output_dir = self.settings.resolved_video_generation_output_dir
@@ -485,6 +495,8 @@ class VideoManager:
             default_fps=self.settings.video_generation_default_fps,
             num_inference_steps=self.settings.video_generation_num_inference_steps,
             guidance_scale=self.settings.video_generation_guidance_scale,
+            guidance_scale_2=self.settings.video_generation_guidance_scale_2,
+            boundary_ratio=self.settings.video_generation_boundary_ratio,
             device=self.settings.video_generation_device,
             torch_dtype=self.settings.video_generation_torch_dtype,
             enable_model_cpu_offload=self.settings.video_generation_enable_model_cpu_offload,

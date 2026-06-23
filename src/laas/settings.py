@@ -139,6 +139,8 @@ class Settings(BaseSettings):
     video_generation_default_fps: int = 16
     video_generation_num_inference_steps: int = 8
     video_generation_guidance_scale: float = 1.0
+    video_generation_guidance_scale_2: float | None = None
+    video_generation_boundary_ratio: float = 0.9
     video_generation_default_response_format: str = "b64_json"
     video_generation_output_dir: Path | None = None
     video_generation_output_retention_seconds: int = 86400
@@ -364,6 +366,8 @@ class Settings(BaseSettings):
             "video_generation_default_fps": self.video_generation_default_fps,
             "video_generation_num_inference_steps": self.video_generation_num_inference_steps,
             "video_generation_guidance_scale": self.video_generation_guidance_scale,
+            "video_generation_guidance_scale_2": self.video_generation_guidance_scale_2,
+            "video_generation_boundary_ratio": self.video_generation_boundary_ratio,
             "video_generation_default_response_format": self.video_generation_default_response_format,
             "video_generation_output_dir": (
                 str(self.video_generation_output_dir) if self.video_generation_output_dir else None

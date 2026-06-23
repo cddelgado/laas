@@ -138,6 +138,8 @@ class LocalVideoGenerationStatus(BaseModel):
     default_fps: int
     num_inference_steps: int
     guidance_scale: float
+    guidance_scale_2: float | None = None
+    boundary_ratio: float
     device: str
     torch_dtype: str
     enable_model_cpu_offload: bool
@@ -523,6 +525,8 @@ class SettingsPatch(BaseModel):
     video_generation_default_fps: int | None = Field(default=None, gt=0)
     video_generation_num_inference_steps: int | None = Field(default=None, gt=0)
     video_generation_guidance_scale: float | None = None
+    video_generation_guidance_scale_2: float | None = None
+    video_generation_boundary_ratio: float | None = Field(default=None, gt=0, le=1)
     video_generation_default_response_format: str | None = None
     video_generation_output_dir: str | None = None
     video_generation_output_retention_seconds: int | None = Field(default=None, ge=0)

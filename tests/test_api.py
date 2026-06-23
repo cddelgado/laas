@@ -1473,6 +1473,8 @@ def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     assert status["vae_filename"] == "VAE/Wan2.1_VAE.safetensors"
     assert status["device"] == "auto"
     assert status["torch_dtype"] == "auto"
+    assert status["guidance_scale_2"] is None
+    assert status["boundary_ratio"] == 0.9
 
     loaded = client.post("/v1/local/videos/load", json={}).json()
     assert loaded["is_loaded"] is True
