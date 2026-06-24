@@ -656,7 +656,8 @@ $response = Invoke-RestMethod `
 ```
 
 Install `requirements-image.txt` first. The native runner requires `diffusers`,
-`transformers`, `torch`, `pillow`, `safetensors`, and `gguf`. On constrained
+`transformers`, `torch`, `pillow`, `safetensors`, `gguf`, `imageio`, and
+`imageio-ffmpeg`. The `imageio` backend is used for MP4 export. On constrained
 GPUs, keep `LAAS_VIDEO_GENERATION_ENABLE_MODEL_CPU_OFFLOAD=true` and start with
 short clips. The old A14B I2V dual-expert profile is still configurable, but it
 is no longer the default because it pins too much memory and can thrash 8GB

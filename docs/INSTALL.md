@@ -513,6 +513,9 @@ Install the image dependency set before using it:
 python -m pip install -r requirements-image.txt
 ```
 
+That file includes `imageio` and `imageio-ffmpeg`, which LAAS requires for MP4
+export from Diffusers video pipelines.
+
 LAAS downloads this GGUF-side asset from `hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF`:
 
 - `Wan2_2-TI2V-5B-Turbo-Q3_K_M.gguf`

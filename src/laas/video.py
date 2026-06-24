@@ -68,6 +68,17 @@ class VideoBackend:
 
 VideoBackendFactory = Callable[[Path, Settings], VideoBackend]
 
+
+def ensure_video_export_dependencies() -> None:
+    try:
+        import imageio  # noqa: F401
+        import imageio_ffmpeg  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "Video export requires imageio and imageio-ffmpeg. Install requirements-image.txt."
+        ) from exc
+
+
 WAN_DIFFUSERS_ALLOW_PATTERNS = (
     "model_index.json",
     "scheduler/*",
@@ -181,6 +192,7 @@ class DiffusersWanVideoBackend(VideoBackend):
         guidance_scale: float,
         seed: int | None,
     ) -> GeneratedVideo:
+        ensure_video_export_dependencies()
         try:
             import torch
             from diffusers.utils import export_to_video

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import json
 import os
 import sqlite3
@@ -41,7 +42,14 @@ from laas.transcription import (
     transcription_to_response,
 )
 from laas.tts import AudioBackend, AudioEncoderMissingError, AudioManager, SynthesizedSpeech, encode_audio, resolve_voice
-from laas.video import DiffusersWanVideoBackend, GeneratedVideo, VideoBackend, VideoManager, frames_for_duration
+from laas.video import (
+    DiffusersWanVideoBackend,
+    GeneratedVideo,
+    VideoBackend,
+    VideoManager,
+    ensure_video_export_dependencies,
+    frames_for_duration,
+)
 
 PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -1626,6 +1634,20 @@ def test_video_generation_auto_downloads_configured_assets(tmp_path: Path, monke
 def test_video_generation_frame_count_matches_wan_temporal_stride() -> None:
     assert frames_for_duration(seconds=4.0, fps=16) == 65
     assert frames_for_duration(seconds=5.0, fps=16) == 81
+
+
+def test_video_export_dependency_check_reports_missing_imageio_ffmpeg(monkeypatch) -> None:
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "imageio_ffmpeg":
+            raise ImportError("missing imageio_ffmpeg")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(RuntimeError, match="imageio and imageio-ffmpeg"):
+        ensure_video_export_dependencies()
 
 
 def test_video_default_backend_is_native_diffusers(tmp_path: Path) -> None:
