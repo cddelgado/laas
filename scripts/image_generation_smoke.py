@@ -11,10 +11,10 @@ from pathlib import Path
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a live LAAS image generation smoke test.")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="LAAS server base URL.")
-    parser.add_argument("--output", type=Path, default=Path("sdxl-smoke.png"), help="Output image path.")
-    parser.add_argument("--model", default="sdxl-turbo")
+    parser.add_argument("--output", type=Path, default=Path("sd-turbo-smoke.png"), help="Output image path.")
+    parser.add_argument("--model", default="sd-turbo")
     parser.add_argument("--prompt", default="a cinematic photo of a tiny robot repairing a neon sign")
-    parser.add_argument("--size", default="768x768")
+    parser.add_argument("--size", default="512x512")
     parser.add_argument("--n", type=int, default=1)
     parser.add_argument("--quality", default=None)
     parser.add_argument("--style", default=None)

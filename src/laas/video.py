@@ -79,6 +79,53 @@ def ensure_video_export_dependencies() -> None:
         ) from exc
 
 
+def write_mp4_video(frames, path: Path, *, fps: int) -> None:
+    ensure_video_export_dependencies()
+    import imageio_ffmpeg
+    import numpy as np
+
+    encoded_frames = []
+    for frame in frames:
+        if hasattr(frame, "detach"):
+            frame = frame.detach().cpu().numpy()
+        elif hasattr(frame, "__array__"):
+            frame = np.asarray(frame)
+        else:
+            frame = np.asarray(frame.convert("RGB"))
+
+        if frame.ndim == 3 and frame.shape[0] in {1, 3, 4} and frame.shape[-1] not in {1, 3, 4}:
+            frame = np.transpose(frame, (1, 2, 0))
+        if frame.ndim == 2:
+            frame = np.stack([frame, frame, frame], axis=-1)
+        if frame.shape[-1] == 4:
+            frame = frame[..., :3]
+        if frame.dtype != np.uint8:
+            frame = frame.astype(np.float32)
+            if frame.size and frame.max() <= 1.0:
+                frame = frame * 255.0
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+        encoded_frames.append(np.ascontiguousarray(frame))
+
+    if not encoded_frames:
+        raise RuntimeError("video generation produced no frames")
+
+    height, width = encoded_frames[0].shape[:2]
+    writer = imageio_ffmpeg.write_frames(
+        str(path),
+        size=(width, height),
+        fps=fps,
+        codec="libx264",
+        pix_fmt_out="yuv420p",
+        output_params=["-movflags", "faststart"],
+    )
+    writer.send(None)
+    try:
+        for frame in encoded_frames:
+            writer.send(frame)
+    finally:
+        writer.close()
+
+
 WAN_DIFFUSERS_ALLOW_PATTERNS = (
     "model_index.json",
     "scheduler/*",
@@ -168,7 +215,11 @@ class DiffusersWanVideoBackend(VideoBackend):
             transformer_2=transformer_2,
             text_encoder=text_encoder,
             vae=vae,
-            boundary_ratio=self.settings.video_generation_boundary_ratio,
+            boundary_ratio=(
+                self.settings.video_generation_boundary_ratio
+                if self.settings.video_generation_architecture.lower() == "dual"
+                else None
+            ),
             torch_dtype=dtype,
         )
         if device == "cuda" and self.settings.video_generation_enable_model_cpu_offload:
@@ -192,10 +243,8 @@ class DiffusersWanVideoBackend(VideoBackend):
         guidance_scale: float,
         seed: int | None,
     ) -> GeneratedVideo:
-        ensure_video_export_dependencies()
         try:
             import torch
-            from diffusers.utils import export_to_video
             from PIL import Image
         except ImportError as exc:
             raise RuntimeError("Wan video generation dependencies are not installed") from exc
@@ -207,25 +256,27 @@ class DiffusersWanVideoBackend(VideoBackend):
         if seed is not None:
             generator_device = self._device if self._device in {"cuda", "cpu"} else "cpu"
             generator = torch.Generator(device=generator_device).manual_seed(seed)
-        output = pipe(
-            image=image,
-            prompt=prompt,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            guidance_scale_2=(
+        pipe_kwargs = {
+            "image": image,
+            "prompt": prompt,
+            "height": height,
+            "width": width,
+            "num_frames": num_frames,
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "generator": generator,
+        }
+        if self.settings.video_generation_architecture.lower() == "dual":
+            pipe_kwargs["guidance_scale_2"] = (
                 self.settings.video_generation_guidance_scale_2
                 if self.settings.video_generation_guidance_scale_2 is not None
                 else guidance_scale
-            ),
-            generator=generator,
-        ).frames[0]
+            )
+        output = pipe(**pipe_kwargs).frames[0]
         output_dir = self.settings.resolved_video_generation_output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / f"{uuid.uuid4().hex}.mp4"
-        export_to_video(output, str(path), fps=fps)
+        write_mp4_video(output, path, fps=fps)
         content = path.read_bytes()
         try:
             path.unlink()

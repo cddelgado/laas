@@ -171,7 +171,7 @@ python -m pip install -r requirements-voice.txt
 
 The equivalent `pyproject.toml` extra is `python -m pip install -e ".[voice]"`.
 
-For local SDXL Turbo image generation, install PyTorch and TorchVision wheels
+For local SD Turbo image generation, install PyTorch and TorchVision wheels
 from the same PyTorch index for your OS/GPU first, then install the image
 dependencies. TorchVision is needed by Transformers image processors; if it is
 missing, image generation can still work but the server logs CLIP/SigLIP
@@ -283,9 +283,9 @@ LAAS_EMBEDDING_AUTO_LOAD=false
 LAAS_EMBEDDING_AUTO_DOWNLOAD=true
 LAAS_EMBEDDING_IDLE_UNLOAD_SECONDS=900
 LAAS_EMBEDDING_DEVICE=auto
-LAAS_IMAGE_MODEL_ID=sdxl-turbo
-LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
-LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_MODEL_ID=sd-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sd-turbo
+LAAS_IMAGE_DEFAULT_SIZE=512x512
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
 LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
@@ -462,7 +462,7 @@ inactivity. Set it to `0` to disable idle unloading.
 
 ## Local Image Generation
 
-The first local image backend is SDXL Turbo through Diffusers. Install the image
+The first local image backend is SD Turbo through Diffusers. Install the image
 dependencies, start `laas`, then point any OpenAI-compatible image client at
 `http://127.0.0.1:8000/v1`. `POST /v1/images/generations` downloads the
 configured image snapshot on first use when `LAAS_IMAGE_AUTO_DOWNLOAD=true`,
@@ -476,9 +476,9 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="local")
 
 image = client.images.generate(
-    model="sdxl-turbo",
+    model="sd-turbo",
     prompt="a cinematic photo of a tiny robot repairing a neon sign",
-    size="768x768",
+    size="512x512",
     n=2,
     response_format="url",
     quality="high",
@@ -504,11 +504,13 @@ The status response includes `download_in_progress`, `download_started_at`,
 `output_retention_seconds`. The server console also logs when the Hugging Face
 snapshot download starts, finishes, or fails.
 
-For the default SDXL Turbo repo, LAAS downloads only the Diffusers component
-files it loads and skips standalone checkpoint files. For the default SD 1.5
-inpainting repo, LAAS skips the safety checker and feature extractor because
-the local backend disables the safety checker at load time. Custom image repos
-still fall back to normal Hugging Face snapshots.
+For the default SD Turbo repo, LAAS downloads only the Diffusers component
+files it loads and skips the standalone checkpoint file. SDXL Turbo remains
+configurable with `LAAS_IMAGE_MODEL_ID=sdxl-turbo` and
+`LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo`, but it is much heavier. For the
+default SD 1.5 inpainting repo, LAAS skips the safety checker and feature
+extractor because the local backend disables the safety checker at load time.
+Custom image repos still fall back to normal Hugging Face snapshots.
 
 Manual download and load endpoints are still available for prewarming or for
 setups that choose `LAAS_IMAGE_AUTO_DOWNLOAD=false`:
@@ -541,17 +543,17 @@ and `n >= 1`. URL outputs are saved under `LAAS_IMAGE_OUTPUT_DIR`, or
 `/v1/local/files/images/{filename}`. Old outputs are removed opportunistically
 according to `LAAS_IMAGE_OUTPUT_RETENTION_SECONDS`.
 
-OpenAI image parameters are translated for SDXL Turbo where possible:
+OpenAI image parameters are translated for SD Turbo where possible:
 `quality=high`/`hd` increases the default step count when
 `num_inference_steps` is not supplied, `style=vivid|natural` adds a prompt hint,
 and `background=opaque|auto` plus `moderation=auto|low` are accepted for client
 compatibility. `background=transparent` returns a clear unsupported-parameter
-error because SDXL Turbo does not generate alpha-channel transparent PNGs.
-SDXL Turbo unloads after
+error because SD Turbo does not generate alpha-channel transparent PNGs.
+SD Turbo unloads after
 `LAAS_IMAGE_IDLE_UNLOAD_SECONDS` seconds of inactivity; set it to `0` to keep it
 loaded.
 
-`POST /v1/images/variations` is implemented as a local SDXL Turbo img2img
+`POST /v1/images/variations` is implemented as a local SD Turbo img2img
 translation of OpenAI's DALL-E-style variations endpoint. It accepts multipart
 form data with a square PNG `image`, plus `n`, `size`, `response_format`, and
 `user`. Local-only tuning fields `seed`, `strength`, `guidance_scale`, and
@@ -561,7 +563,7 @@ img2img prompt.
 
 Image edits use `stable-diffusion-v1-5/stable-diffusion-inpainting` through
 Diffusers. The edit model has separate load/download/unload lifecycle endpoints
-so it does not need to stay in memory with SDXL Turbo:
+so it does not need to stay in memory with SD Turbo:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/local/images/edit/download `
@@ -624,7 +626,7 @@ status together, including active image jobs and the last image job error.
 Use `POST /v1/local/images/unload/all` to unload both image pipelines at once.
 By default, `LAAS_IMAGE_EXCLUSIVE_LOAD=true` means loading or using generation
 and variation unloads the image edit pipeline first, and loading or using image
-edits unloads the generation/variation pipeline first. This keeps SDXL Turbo and
+edits unloads the generation/variation pipeline first. This keeps SD Turbo and
 SD 1.5 inpainting from sitting in memory together unless you explicitly disable
 exclusive loading.
 
@@ -680,7 +682,7 @@ image pipelines, and video generation model in one request.
 
 ## VRAM Concurrency Coordination
 
-LAAS includes a thread-safe VRAM Concurrency Coordinator to serialize heavy GPU-bound resources (LLM completions, SDXL Turbo image generation, SD 1.5 inpainting, and video generation). It automatically:
+LAAS includes a thread-safe VRAM Concurrency Coordinator to serialize heavy GPU-bound resources (LLM completions, SD Turbo image generation, SD 1.5 inpainting, and video generation). It automatically:
 - Serializes concurrent GPU-bound requests to prevent CUDA Out-of-Memory (OOM) errors and KV cache corruption.
 - Safely unloads conflicting heavy models and clears PyTorch CUDA memory cache on swaps.
 - Stream-wraps completions to hold the serialization lock until the client finishes reading.

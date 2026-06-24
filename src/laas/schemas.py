@@ -145,7 +145,7 @@ class LocalVideoGenerationStatus(BaseModel):
     num_inference_steps: int
     guidance_scale: float
     guidance_scale_2: float | None = None
-    boundary_ratio: float
+    boundary_ratio: float | None = None
     device: str
     torch_dtype: str
     enable_model_cpu_offload: bool

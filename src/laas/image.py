@@ -21,8 +21,29 @@ IMAGE_OUTPUT_MEDIA_TYPES = {
     "webp": "image/webp",
 }
 SDXL_TURBO_REPO_ID = "stabilityai/sdxl-turbo"
+SD_TURBO_REPO_ID = "stabilityai/sd-turbo"
 SD15_INPAINT_REPO_ID = "stable-diffusion-v1-5/stable-diffusion-inpainting"
 
+SD_TURBO_COMMON_ALLOW_PATTERNS = [
+    "model_index.json",
+    "scheduler/*",
+    "text_encoder/config.json",
+    "tokenizer/*",
+    "unet/config.json",
+    "vae/config.json",
+]
+SD_TURBO_FP16_ALLOW_PATTERNS = [
+    *SD_TURBO_COMMON_ALLOW_PATTERNS,
+    "text_encoder/model.fp16.safetensors",
+    "unet/diffusion_pytorch_model.fp16.safetensors",
+    "vae/diffusion_pytorch_model.fp16.safetensors",
+]
+SD_TURBO_FULL_ALLOW_PATTERNS = [
+    *SD_TURBO_COMMON_ALLOW_PATTERNS,
+    "text_encoder/model.safetensors",
+    "unet/diffusion_pytorch_model.safetensors",
+    "vae/diffusion_pytorch_model.safetensors",
+]
 SDXL_TURBO_COMMON_ALLOW_PATTERNS = [
     "model_index.json",
     "scheduler/*",
@@ -146,6 +167,10 @@ def _uses_fp16_variant(dtype_name: str) -> bool:
 
 
 def image_generation_snapshot_allow_patterns(settings: Settings) -> list[str] | None:
+    if settings.image_hf_repo_id == SD_TURBO_REPO_ID:
+        if _uses_fp16_variant(settings.image_torch_dtype):
+            return SD_TURBO_FP16_ALLOW_PATTERNS
+        return SD_TURBO_FULL_ALLOW_PATTERNS
     if settings.image_hf_repo_id != SDXL_TURBO_REPO_ID:
         return None
     if _uses_fp16_variant(settings.image_torch_dtype):
@@ -157,6 +182,18 @@ def image_edit_snapshot_allow_patterns(settings: Settings) -> list[str] | None:
     if settings.image_edit_hf_repo_id != SD15_INPAINT_REPO_ID:
         return None
     return SD15_INPAINT_FP16_ALLOW_PATTERNS
+
+
+def _empty_cuda_cache() -> None:
+    try:
+        import gc
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 class DiffusersImageBackend(ImageBackend):
@@ -258,6 +295,7 @@ class DiffusersImageBackend(ImageBackend):
     def close(self) -> None:
         self._image_to_image_pipe = None
         self._pipe = None
+        _empty_cuda_cache()
 
     def _img2img_pipe(self):
         if self._image_to_image_pipe is not None:
@@ -387,6 +425,7 @@ class DiffusersImageEditBackend(ImageEditBackend):
 
     def close(self) -> None:
         self._pipe = None
+        _empty_cuda_cache()
 
 
 ImageBackendFactory = Callable[[Path, Settings], ImageBackend]
@@ -923,7 +962,7 @@ def normalize_image_generation_options(
         raise ImageParameterError("unsupported background value", param="background")
     if background == "transparent":
         raise ImageParameterError(
-            "background=transparent is not supported by the local SDXL Turbo backend",
+            "background=transparent is not supported by the local image backend",
             param="background",
         )
     if moderation not in {None, "auto", "low"}:

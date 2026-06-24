@@ -12,7 +12,7 @@
       {"path": "data.0.object", "equals": "model"},
       {"path": "data.0.id", "equals": "gemma-4-e4b-it-q4_k_m"},
       {"path": "data.1.id", "equals": "bge-small-en-v1.5"},
-      {"path": "data.2.id", "equals": "sdxl-turbo"},
+      {"path": "data.2.id", "equals": "sd-turbo"},
       {"path": "data.3.id", "equals": "sd-1.5-inpainting"}
     ]
   }

@@ -5,7 +5,7 @@
     "method": "POST",
     "path": "/v1/images/generations",
     "json": {
-      "model": "sdxl-turbo",
+      "model": "sd-turbo",
       "prompt": "a tiny robot repairing a neon sign",
       "size": "512x384",
       "response_format": "b64_json",

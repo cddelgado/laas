@@ -21,6 +21,7 @@ from laas.app import create_app
 from laas.backends import EchoBackend, _add_mmproj_kwargs, _add_speculative_kwargs, _add_supported_constructor_kwargs
 from laas.embedding import EmbeddingManager, HashEmbeddingBackend
 from laas.image import (
+    DiffusersImageBackend,
     DiffusersImageEditBackend,
     GeneratedImage,
     ImageBackend,
@@ -363,6 +364,21 @@ def test_diffusers_image_edit_backend_passes_padding_crop(tmp_path: Path) -> Non
 
     assert pipe.calls[0]["padding_mask_crop"] == 24
     assert result.media_type == "image/png"
+
+
+def test_diffusers_image_backend_close_releases_cuda_cache(monkeypatch) -> None:
+    called: list[bool] = []
+    backend = object.__new__(DiffusersImageBackend)
+    backend._image_to_image_pipe = object()
+    backend._pipe = object()
+
+    monkeypatch.setattr("laas.image._empty_cuda_cache", lambda: called.append(True))
+
+    backend.close()
+
+    assert backend._image_to_image_pipe is None
+    assert backend._pipe is None
+    assert called == [True]
 
 
 def make_audio_client(
@@ -760,13 +776,13 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     assert models["object"] == "list"
     assert models["data"][0]["id"] == "gemma-4-e4b-it-q4_k_m"
     assert any(model["id"] == "bge-small-en-v1.5" for model in models["data"])
-    assert any(model["id"] == "sdxl-turbo" for model in models["data"])
+    assert any(model["id"] == "sd-turbo" for model in models["data"])
     assert any(model["id"] == "sd-1.5-inpainting" for model in models["data"])
 
     embedding_model = client.get("/v1/models/bge-small-en-v1.5").json()
     assert embedding_model["id"] == "bge-small-en-v1.5"
-    image_model = client.get("/v1/models/sdxl-turbo").json()
-    assert image_model["id"] == "sdxl-turbo"
+    image_model = client.get("/v1/models/sd-turbo").json()
+    assert image_model["id"] == "sd-turbo"
     image_edit_model = client.get("/v1/models/sd-1.5-inpainting").json()
     assert image_edit_model["id"] == "sd-1.5-inpainting"
 
@@ -781,7 +797,7 @@ def test_models_and_local_status(tmp_path: Path) -> None:
     assert status["capabilities"]["audio_input"] is False
 
     image_status = client.get("/v1/local/images/status/all").json()
-    assert image_status["generation"]["configured_model"] == "sdxl-turbo"
+    assert image_status["generation"]["configured_model"] == "sd-turbo"
     assert image_status["edit"]["configured_model"] == "sd-1.5-inpainting"
 
 
@@ -1264,7 +1280,7 @@ def test_image_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     client, backend = make_image_client(tmp_path)
 
     status = client.get("/v1/local/images/status").json()
-    assert status["configured_model"] == "sdxl-turbo"
+    assert status["configured_model"] == "sd-turbo"
     assert status["downloaded"] is True
     assert status["is_loaded"] is False
     assert status["output_dir"] == str(tmp_path / "outputs" / "images")
@@ -1276,7 +1292,7 @@ def test_image_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     response = client.post(
         "/v1/images/generations",
         json={
-            "model": "sdxl-turbo",
+            "model": "sd-turbo",
             "prompt": "a tiny robot repairing a neon sign",
             "size": "512x384",
             "response_format": "b64_json",
@@ -1344,7 +1360,7 @@ def test_image_variation_supports_url_response_and_output_format(tmp_path: Path)
     response = client.post(
         "/v1/images/variations",
         data={
-            "model": "sdxl-turbo",
+            "model": "sd-turbo",
             "n": "2",
             "response_format": "url",
             "size": "512x512",
@@ -1468,7 +1484,7 @@ def test_image_generation_auto_downloads_for_openai_client_path(tmp_path: Path, 
     assert status["download_finished_at"] is not None
     assert captured_allow_patterns is not None
     assert captured_allow_patterns == image_generation_snapshot_allow_patterns(Settings(model_dir=tmp_path))
-    assert "sd_xl_turbo_1.0_fp16.safetensors" not in captured_allow_patterns
+    assert "sd_turbo.safetensors" not in captured_allow_patterns
     assert "unet/diffusion_pytorch_model.fp16.safetensors" in captured_allow_patterns
 
 
@@ -1491,7 +1507,7 @@ def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     assert status["device"] == "auto"
     assert status["torch_dtype"] == "auto"
     assert status["guidance_scale_2"] is None
-    assert status["boundary_ratio"] == 0.9
+    assert status["boundary_ratio"] is None
 
     loaded = client.post("/v1/local/videos/load", json={}).json()
     assert loaded["is_loaded"] is True
@@ -1645,6 +1661,51 @@ def test_video_generation_frame_count_matches_wan_temporal_stride() -> None:
     assert frames_for_duration(seconds=5.0, fps=16) == 81
 
 
+def test_single_transformer_wan_does_not_pass_second_guidance_scale(tmp_path: Path, monkeypatch) -> None:
+    from PIL import Image
+
+    class FakePipe:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def __call__(self, **kwargs: Any) -> Any:
+            self.calls.append(kwargs)
+            return type("Output", (), {"frames": [[Image.new("RGB", (8, 8), (0, 0, 0))]]})()
+
+    def fake_write_mp4_video(frames: list[Any], path: Path, *, fps: int) -> None:
+        _ = frames, fps
+        Path(path).write_bytes(b"fake-mp4")
+
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        video_generation_output_dir=tmp_path / "videos",
+        video_generation_architecture="single",
+        video_generation_guidance_scale_2=None,
+    )
+    pipe = FakePipe()
+    backend = object.__new__(DiffusersWanVideoBackend)
+    backend.settings = settings
+    backend._device = "cpu"
+    monkeypatch.setattr(backend, "_ensure_pipe", lambda: pipe)
+    monkeypatch.setattr("laas.video.write_mp4_video", fake_write_mp4_video)
+
+    result = backend.generate(
+        prompt="hello",
+        image_bytes=PNG_1X1,
+        width=8,
+        height=8,
+        seconds=1,
+        fps=8,
+        num_inference_steps=1,
+        guidance_scale=1.0,
+        seed=None,
+    )
+
+    assert result.content == b"fake-mp4"
+    assert "guidance_scale_2" not in pipe.calls[0]
+
+
 def test_video_export_dependency_check_reports_missing_imageio_ffmpeg(monkeypatch) -> None:
     real_import = builtins.__import__
 
@@ -1747,7 +1808,7 @@ def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -
 
     assert response.status_code == 200
     assert response.json()["downloaded"] is True
-    assert response.json()["model_id"] == "sdxl-turbo"
+    assert response.json()["model_id"] == "sd-turbo"
     assert captured_allow_patterns is not None
     assert captured_allow_patterns == image_generation_snapshot_allow_patterns(Settings(model_dir=tmp_path))
 
@@ -1889,6 +1950,72 @@ def test_image_exclusive_load_unloads_other_image_pipeline(tmp_path: Path) -> No
     assert client.post("/v1/local/images/edit/load", json={}).json()["is_loaded"] is True
     assert image_backend.closed is True
     assert client.get("/v1/local/images/status").json()["is_loaded"] is False
+
+
+def test_video_generation_unloads_image_pipelines_when_exclusive_load_is_enabled(tmp_path: Path) -> None:
+    settings = Settings(
+        model_dir=tmp_path,
+        settings_file=tmp_path / "settings.json",
+        idle_unload_seconds=0,
+        image_idle_unload_seconds=0,
+        image_edit_idle_unload_seconds=0,
+        video_generation_idle_unload_seconds=0,
+        image_exclusive_load=True,
+    )
+    text_manager = ModelManager(settings, backend_factory=lambda model_path, active_settings: EchoBackend())
+    image_backend = FakeImageBackend()
+    image_edit_backend = FakeImageEditBackend()
+    video_backend = FakeVideoBackend()
+    image_manager = ImageManager(settings, backend_factory=lambda model_path, active_settings: image_backend)
+    image_edit_manager = ImageEditManager(settings, backend_factory=lambda model_path, active_settings: image_edit_backend)
+    video_manager = VideoManager(settings, backend_factory=lambda model_path, active_settings: video_backend)
+
+    settings.model_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.model_path.write_bytes(b"model")
+    if settings.mmproj_path:
+        settings.mmproj_path.write_bytes(b"mmproj")
+    settings.image_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+    settings.image_edit_model_path.mkdir(parents=True, exist_ok=True)
+    (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
+    settings.video_generation_transformer_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.video_generation_transformer_path.write_bytes(b"transformer")
+    settings.video_generation_text_encoder_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.video_generation_text_encoder_path.write_bytes(b"text-encoder")
+    for filename in (
+        "model_index.json",
+        "scheduler/scheduler_config.json",
+        "text_encoder/config.json",
+        "tokenizer/tokenizer.json",
+        "tokenizer/tokenizer_config.json",
+        "transformer/config.json",
+        "vae/config.json",
+    ):
+        path = settings.video_generation_diffusers_model_path / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+
+    client = TestClient(
+        create_app(
+            settings=settings,
+            manager=text_manager,
+            image_manager=image_manager,
+            image_edit_manager=image_edit_manager,
+            video_manager=video_manager,
+        )
+    )
+
+    assert client.post("/v1/local/images/load", json={}).json()["is_loaded"] is True
+    response = client.post(
+        "/v1/videos/generations",
+        data={"prompt": "hello"},
+        files={"image": ("frame.png", PNG_1X1, "image/png")},
+    )
+
+    assert response.status_code == 200
+    assert image_backend.closed is True
+    assert client.get("/v1/local/images/status").json()["is_loaded"] is False
+    assert client.get("/v1/local/videos/status").json()["is_loaded"] is True
 
 
 def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -> None:

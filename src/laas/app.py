@@ -197,6 +197,14 @@ def create_app(
         if active_settings.image_exclusive_load and active_image_manager.is_loaded:
             active_image_manager.unload()
 
+    def prepare_video_generation_slot() -> None:
+        if not active_settings.image_exclusive_load:
+            return
+        if active_image_manager.is_loaded:
+            active_image_manager.unload()
+        if active_image_edit_manager.is_loaded:
+            active_image_edit_manager.unload()
+
     def video_response_item(*, request: Request, video, response_format: str) -> dict[str, Any]:
         if response_format == "b64_json":
             return {"b64_json": encode_video_output(video)}
@@ -1905,6 +1913,7 @@ def create_app(
             )
         try:
             with coordinator.execute("video"):
+                prepare_video_generation_slot()
                 options = normalize_video_generation_options(
                     prompt=prompt,
                     size=size or active_settings.video_generation_default_size,

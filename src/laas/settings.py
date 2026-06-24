@@ -98,9 +98,9 @@ class Settings(BaseSettings):
     embedding_auto_download: bool = True
     embedding_idle_unload_seconds: int = 900
     embedding_device: str = "auto"
-    image_model_id: str = "sdxl-turbo"
-    image_hf_repo_id: str = "stabilityai/sdxl-turbo"
-    image_default_size: str = "768x768"
+    image_model_id: str = "sd-turbo"
+    image_hf_repo_id: str = "stabilityai/sd-turbo"
+    image_default_size: str = "512x512"
     image_num_inference_steps: int = 2
     image_guidance_scale: float = 0.0
     image_default_response_format: str = "b64_json"
@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     video_generation_num_inference_steps: int = 4
     video_generation_guidance_scale: float = 1.0
     video_generation_guidance_scale_2: float | None = None
-    video_generation_boundary_ratio: float = 0.9
+    video_generation_boundary_ratio: float | None = None
     video_generation_default_response_format: str = "b64_json"
     video_generation_output_dir: Path | None = None
     video_generation_output_retention_seconds: int = 86400

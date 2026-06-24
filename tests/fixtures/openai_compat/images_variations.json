@@ -5,7 +5,7 @@
     "method": "POST",
     "path": "/v1/images/variations",
     "form": {
-      "model": "sdxl-turbo",
+      "model": "sd-turbo",
       "response_format": "b64_json",
       "size": "512x512",
       "seed": "80"

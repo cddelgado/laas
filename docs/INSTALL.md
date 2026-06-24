@@ -293,7 +293,7 @@ To audit image, video, and audio-input behavior against a running server:
 
 ## 5. Optional Local Image Generation
 
-The SDXL Turbo image backend uses PyTorch and Diffusers. Install PyTorch and
+The SD Turbo image backend uses PyTorch and Diffusers. Install PyTorch and
 TorchVision wheels from the same PyTorch index for your OS/GPU first, then
 install LAAS image dependencies. TorchVision is needed by Transformers image
 processors; if it is missing, image generation can still work but the server
@@ -392,9 +392,9 @@ python -m pip install -e ".[image]"
 Default assets:
 
 ```text
-LAAS_IMAGE_MODEL_ID=sdxl-turbo
-LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
-LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_MODEL_ID=sd-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sd-turbo
+LAAS_IMAGE_DEFAULT_SIZE=512x512
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
 LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
@@ -418,13 +418,15 @@ LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 ```
 
 The image assets use the same `LAAS_MODEL_DIR` root as the GGUF model. For the
-default SDXL Turbo repo, LAAS downloads only the Diffusers component files it
-loads and skips standalone checkpoint files such as
-`sd_xl_turbo_1.0_fp16.safetensors`. For the default SD 1.5 inpainting repo,
-LAAS downloads only the scheduler, tokenizer, text encoder, UNet, and VAE files;
-the local backend disables the safety checker, so safety checker and feature
-extractor files are skipped. Custom image repos fall back to normal Hugging Face
-snapshots unless they are one of these known defaults.
+default SD Turbo repo, LAAS downloads only the Diffusers component files it
+loads and skips the standalone checkpoint file `sd_turbo.safetensors`. SDXL
+Turbo remains configurable with `LAAS_IMAGE_MODEL_ID=sdxl-turbo` and
+`LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo`, but it is much heavier. For the
+default SD 1.5 inpainting repo, LAAS downloads only the scheduler, tokenizer,
+text encoder, UNet, and VAE files; the local backend disables the safety
+checker, so safety checker and feature extractor files are skipped. Custom image
+repos fall back to normal Hugging Face snapshots unless they are one of these
+known defaults.
 
 By default, the OpenAI-compatible `POST /v1/images/generations` and
 `POST /v1/images/edits` endpoints download their configured assets on first use,
@@ -441,7 +443,7 @@ URL outputs are saved under
 served from `/v1/local/files/images/{filename}`. LAAS removes old output images
 opportunistically according to `LAAS_IMAGE_OUTPUT_RETENTION_SECONDS`.
 
-OpenAI image parameters are translated for SDXL Turbo where possible:
+OpenAI image parameters are translated for SD Turbo where possible:
 
 - `quality=high` or `quality=hd` increases the default step count when
   `num_inference_steps` is not supplied.
@@ -449,10 +451,10 @@ OpenAI image parameters are translated for SDXL Turbo where possible:
 - `background=auto` and `background=opaque` are accepted.
 - `moderation=auto` and `moderation=low` are accepted for client compatibility;
   LAAS does not add a local image moderation model.
-- `background=transparent` returns an unsupported-parameter error because SDXL
+- `background=transparent` returns an unsupported-parameter error because SD
   Turbo does not generate transparent PNGs.
 
-`POST /v1/images/variations` is implemented as a local SDXL Turbo img2img
+`POST /v1/images/variations` is implemented as a local SD Turbo img2img
 translation of OpenAI's DALL-E-style variations endpoint. It accepts multipart
 form data with a square PNG `image`, plus `n`, `size`, `response_format`, and
 `user`. Local-only tuning fields `seed`, `strength`, `guidance_scale`, and
@@ -504,7 +506,7 @@ status together, including active image jobs and the last image job error.
 Use `POST /v1/local/images/unload/all` to unload both image pipelines at once.
 By default, `LAAS_IMAGE_EXCLUSIVE_LOAD=true` means loading or using generation
 and variation unloads the image edit pipeline first, and loading or using image
-edits unloads the generation/variation pipeline first. This keeps SDXL Turbo and
+edits unloads the generation/variation pipeline first. This keeps SD Turbo and
 SD 1.5 inpainting from sitting in memory together unless you explicitly disable
 exclusive loading.
 
@@ -707,9 +709,9 @@ LAAS_STT_AUTO_DOWNLOAD=false
 LAAS_STT_IDLE_UNLOAD_SECONDS=900
 LAAS_VOICE_AUTO_LOAD=false
 LAAS_VOICE_AUTO_DOWNLOAD=false
-LAAS_IMAGE_MODEL_ID=sdxl-turbo
-LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
-LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_MODEL_ID=sd-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sd-turbo
+LAAS_IMAGE_DEFAULT_SIZE=512x512
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
 LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
@@ -775,9 +777,9 @@ LAAS_STT_AUTO_DOWNLOAD=false
 LAAS_STT_IDLE_UNLOAD_SECONDS=900
 LAAS_VOICE_AUTO_LOAD=false
 LAAS_VOICE_AUTO_DOWNLOAD=false
-LAAS_IMAGE_MODEL_ID=sdxl-turbo
-LAAS_IMAGE_HF_REPO_ID=stabilityai/sdxl-turbo
-LAAS_IMAGE_DEFAULT_SIZE=768x768
+LAAS_IMAGE_MODEL_ID=sd-turbo
+LAAS_IMAGE_HF_REPO_ID=stabilityai/sd-turbo
+LAAS_IMAGE_DEFAULT_SIZE=512x512
 LAAS_IMAGE_NUM_INFERENCE_STEPS=2
 LAAS_IMAGE_GUIDANCE_SCALE=0.0
 LAAS_IMAGE_DEFAULT_RESPONSE_FORMAT=b64_json
