@@ -442,11 +442,12 @@ def make_video_client(
     if write_model:
         settings.video_generation_transformer_path.parent.mkdir(parents=True, exist_ok=True)
         settings.video_generation_transformer_path.write_bytes(b"transformer")
+        settings.video_generation_text_encoder_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.video_generation_text_encoder_path.write_bytes(b"text-encoder")
         for filename in (
             "model_index.json",
             "scheduler/scheduler_config.json",
             "text_encoder/config.json",
-            "text_encoder/model.safetensors.index.json",
             "tokenizer/tokenizer.json",
             "tokenizer/tokenizer_config.json",
             "transformer/config.json",
@@ -1464,7 +1465,9 @@ def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     assert status["is_loaded"] is False
     assert status["hf_repo_id"] == "hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF"
     assert status["diffusers_hf_repo_id"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    assert status["text_encoder_hf_repo_id"] == "city96/umt5-xxl-encoder-gguf"
     assert status["transformer_filename"] == "Wan2_2-TI2V-5B-Turbo-Q3_K_M.gguf"
+    assert status["text_encoder_filename"] == "umt5-xxl-encoder-Q3_K_S.gguf"
     assert status["high_noise_filename"] is None
     assert status["low_noise_filename"] is None
     assert status["vae_filename"] is None
@@ -1592,7 +1595,6 @@ def test_video_generation_auto_downloads_configured_assets(tmp_path: Path, monke
             "model_index.json",
             "scheduler/scheduler_config.json",
             "text_encoder/config.json",
-            "text_encoder/model.safetensors.index.json",
             "tokenizer/tokenizer.json",
             "tokenizer/tokenizer_config.json",
             "transformer/config.json",
@@ -1881,11 +1883,12 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
     (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
     settings.video_generation_transformer_path.parent.mkdir(parents=True, exist_ok=True)
     settings.video_generation_transformer_path.write_bytes(b"transformer")
+    settings.video_generation_text_encoder_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.video_generation_text_encoder_path.write_bytes(b"text-encoder")
     for filename in (
         "model_index.json",
         "scheduler/scheduler_config.json",
         "text_encoder/config.json",
-        "text_encoder/model.safetensors.index.json",
         "tokenizer/tokenizer.json",
         "tokenizer/tokenizer_config.json",
         "transformer/config.json",

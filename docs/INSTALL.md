@@ -517,11 +517,16 @@ LAAS downloads this GGUF-side asset from `hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF`:
 
 - `Wan2_2-TI2V-5B-Turbo-Q3_K_M.gguf`
 
+It also downloads this quantized text encoder GGUF from
+`city96/umt5-xxl-encoder-gguf`:
+
+- `umt5-xxl-encoder-Q3_K_S.gguf`
+
 It also downloads required non-transformer components from
 `Wan-AI/Wan2.2-TI2V-5B-Diffusers`: `model_index.json`, scheduler, tokenizer,
-text encoder, VAE, and transformer config files. The full transformer
-safetensor shards from the Diffusers repo are not downloaded because the Q3 GGUF
-file provides those weights.
+VAE, text encoder config, and transformer config files. The full transformer and
+text-encoder safetensor shards from the Diffusers repo are not downloaded
+because the GGUF files provide those weights.
 
 Manual download:
 

@@ -71,7 +71,7 @@ VideoBackendFactory = Callable[[Path, Settings], VideoBackend]
 WAN_DIFFUSERS_ALLOW_PATTERNS = (
     "model_index.json",
     "scheduler/*",
-    "text_encoder/*",
+    "text_encoder/config.json",
     "tokenizer/*",
     "transformer/config.json",
     "vae/*",
@@ -81,7 +81,6 @@ WAN_DIFFUSERS_BASE_REQUIRED_FILES = (
     "model_index.json",
     "scheduler/scheduler_config.json",
     "text_encoder/config.json",
-    "text_encoder/model.safetensors.index.json",
     "tokenizer/tokenizer.json",
     "tokenizer/tokenizer_config.json",
     "transformer/config.json",
@@ -109,6 +108,7 @@ class DiffusersWanVideoBackend(VideoBackend):
                 WanImageToVideoPipeline,
                 WanTransformer3DModel,
             )
+            from transformers import UMT5EncoderModel
         except ImportError as exc:
             raise RuntimeError(
                 "Wan video generation requires the image/video dependencies: diffusers, transformers, torch, "
@@ -119,6 +119,11 @@ class DiffusersWanVideoBackend(VideoBackend):
         dtype = self._resolve_dtype(torch, device=device)
         base_path = self.settings.video_generation_diffusers_model_path
         quantization_config = GGUFQuantizationConfig(compute_dtype=dtype)
+        text_encoder = UMT5EncoderModel.from_pretrained(
+            str(base_path / "text_encoder"),
+            gguf_file=str(self.settings.video_generation_text_encoder_path),
+            torch_dtype=dtype,
+        )
 
         architecture = normalized_video_architecture(self.settings)
         transformer = WanTransformer3DModel.from_single_file(
@@ -150,6 +155,7 @@ class DiffusersWanVideoBackend(VideoBackend):
             str(base_path),
             transformer=transformer,
             transformer_2=transformer_2,
+            text_encoder=text_encoder,
             vae=vae,
             boundary_ratio=self.settings.video_generation_boundary_ratio,
             torch_dtype=dtype,
@@ -329,7 +335,9 @@ class VideoManager:
         architecture: str | None = None,
         hf_repo_id: str | None = None,
         diffusers_hf_repo_id: str | None = None,
+        text_encoder_hf_repo_id: str | None = None,
         transformer_filename: str | None = None,
+        text_encoder_filename: str | None = None,
         high_noise_filename: str | None = None,
         low_noise_filename: str | None = None,
         vae_filename: str | None = None,
@@ -341,8 +349,12 @@ class VideoManager:
                 self.settings.video_generation_hf_repo_id = hf_repo_id
             if diffusers_hf_repo_id:
                 self.settings.video_generation_diffusers_hf_repo_id = diffusers_hf_repo_id
+            if text_encoder_hf_repo_id:
+                self.settings.video_generation_text_encoder_hf_repo_id = text_encoder_hf_repo_id
             if transformer_filename:
                 self.settings.video_generation_transformer_filename = transformer_filename
+            if text_encoder_filename:
+                self.settings.video_generation_text_encoder_filename = text_encoder_filename
             if high_noise_filename:
                 self.settings.video_generation_high_noise_filename = high_noise_filename
             if low_noise_filename:
@@ -371,6 +383,12 @@ class VideoManager:
                         filename=filename,
                         local_dir=local_dir,
                     )
+                if self.settings.video_generation_text_encoder_filename:
+                    hf_hub_download(
+                        repo_id=self.settings.video_generation_text_encoder_hf_repo_id,
+                        filename=self.settings.video_generation_text_encoder_filename,
+                        local_dir=self.settings.video_generation_text_encoder_model_path,
+                    )
                 snapshot_download(
                     repo_id=self.settings.video_generation_diffusers_hf_repo_id,
                     local_dir=diffusers_dir,
@@ -397,7 +415,9 @@ class VideoManager:
         architecture: str | None = None,
         hf_repo_id: str | None = None,
         diffusers_hf_repo_id: str | None = None,
+        text_encoder_hf_repo_id: str | None = None,
         transformer_filename: str | None = None,
+        text_encoder_filename: str | None = None,
         high_noise_filename: str | None = None,
         low_noise_filename: str | None = None,
         vae_filename: str | None = None,
@@ -417,8 +437,12 @@ class VideoManager:
                 self.settings.video_generation_hf_repo_id = hf_repo_id
             if diffusers_hf_repo_id:
                 self.settings.video_generation_diffusers_hf_repo_id = diffusers_hf_repo_id
+            if text_encoder_hf_repo_id:
+                self.settings.video_generation_text_encoder_hf_repo_id = text_encoder_hf_repo_id
             if transformer_filename:
                 self.settings.video_generation_transformer_filename = transformer_filename
+            if text_encoder_filename:
+                self.settings.video_generation_text_encoder_filename = text_encoder_filename
             if high_noise_filename:
                 self.settings.video_generation_high_noise_filename = high_noise_filename
             if low_noise_filename:
@@ -488,7 +512,7 @@ class VideoManager:
         return video
 
     def _is_downloaded(self) -> bool:
-        return all(path.exists() for path in self._asset_paths()) and all(
+        return all(path.exists() for path in self._asset_paths()) and self._text_encoder_downloaded() and all(
             (self.settings.video_generation_diffusers_model_path / filename).exists()
             for filename in video_diffusers_required_files(self.settings)
         )
@@ -523,6 +547,11 @@ class VideoManager:
             paths.append(self.settings.video_generation_vae_path)
         return tuple(paths)
 
+    def _text_encoder_downloaded(self) -> bool:
+        if not self.settings.video_generation_text_encoder_filename:
+            return False
+        return self.settings.video_generation_text_encoder_path.exists()
+
     def _first_missing_asset(self) -> tuple[Path, str]:
         if normalized_video_architecture(self.settings) == "dual":
             assets = [
@@ -536,6 +565,8 @@ class VideoManager:
         for path, name in assets:
             if not path.exists():
                 return path, name
+        if not self._text_encoder_downloaded():
+            return self.settings.video_generation_text_encoder_path, "text_encoder"
         for filename in video_diffusers_required_files(self.settings):
             path = self.settings.video_generation_diffusers_model_path / filename
             if not path.exists():
@@ -553,13 +584,20 @@ class VideoManager:
             downloaded=downloaded,
             hf_repo_id=self.settings.video_generation_hf_repo_id,
             diffusers_hf_repo_id=self.settings.video_generation_diffusers_hf_repo_id,
+            text_encoder_hf_repo_id=self.settings.video_generation_text_encoder_hf_repo_id,
             transformer_filename=self.settings.video_generation_transformer_filename,
+            text_encoder_filename=self.settings.video_generation_text_encoder_filename,
             high_noise_filename=self.settings.video_generation_high_noise_filename,
             low_noise_filename=self.settings.video_generation_low_noise_filename,
             vae_filename=self.settings.video_generation_vae_filename,
             transformer_path=(
                 str(self.settings.video_generation_transformer_path)
                 if self.settings.video_generation_transformer_filename
+                else None
+            ),
+            text_encoder_path=(
+                str(self.settings.video_generation_text_encoder_path)
+                if self.settings.video_generation_text_encoder_filename
                 else None
             ),
             high_noise_path=(

@@ -132,7 +132,9 @@ class Settings(BaseSettings):
     video_generation_architecture: str = "single"
     video_generation_hf_repo_id: str = "hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF"
     video_generation_diffusers_hf_repo_id: str = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    video_generation_text_encoder_hf_repo_id: str = "city96/umt5-xxl-encoder-gguf"
     video_generation_transformer_filename: str | None = "Wan2_2-TI2V-5B-Turbo-Q3_K_M.gguf"
+    video_generation_text_encoder_filename: str | None = "umt5-xxl-encoder-Q3_K_S.gguf"
     video_generation_high_noise_filename: str | None = None
     video_generation_low_noise_filename: str | None = None
     video_generation_vae_filename: str | None = None
@@ -158,6 +160,7 @@ class Settings(BaseSettings):
         "image_output_dir",
         "video_generation_output_dir",
         "video_generation_transformer_filename",
+        "video_generation_text_encoder_filename",
         "video_generation_high_noise_filename",
         "video_generation_low_noise_filename",
         "video_generation_vae_filename",
@@ -241,6 +244,10 @@ class Settings(BaseSettings):
         return self.model_dir / self.video_generation_diffusers_hf_repo_id.replace("/", "__")
 
     @property
+    def video_generation_text_encoder_model_path(self) -> Path:
+        return self.model_dir / self.video_generation_text_encoder_hf_repo_id.replace("/", "__")
+
+    @property
     def video_generation_high_noise_path(self) -> Path:
         if not self.video_generation_high_noise_filename:
             return self.video_generation_model_path / ""
@@ -263,6 +270,12 @@ class Settings(BaseSettings):
         if not self.video_generation_transformer_filename:
             return self.video_generation_model_path / ""
         return self.video_generation_model_path / self.video_generation_transformer_filename
+
+    @property
+    def video_generation_text_encoder_path(self) -> Path:
+        if not self.video_generation_text_encoder_filename:
+            return self.video_generation_text_encoder_model_path / ""
+        return self.video_generation_text_encoder_model_path / self.video_generation_text_encoder_filename
 
     @property
     def resolved_image_output_dir(self) -> Path:
@@ -377,7 +390,9 @@ class Settings(BaseSettings):
             "video_generation_architecture": self.video_generation_architecture,
             "video_generation_hf_repo_id": self.video_generation_hf_repo_id,
             "video_generation_diffusers_hf_repo_id": self.video_generation_diffusers_hf_repo_id,
+            "video_generation_text_encoder_hf_repo_id": self.video_generation_text_encoder_hf_repo_id,
             "video_generation_transformer_filename": self.video_generation_transformer_filename,
+            "video_generation_text_encoder_filename": self.video_generation_text_encoder_filename,
             "video_generation_high_noise_filename": self.video_generation_high_noise_filename,
             "video_generation_low_noise_filename": self.video_generation_low_noise_filename,
             "video_generation_vae_filename": self.video_generation_vae_filename,

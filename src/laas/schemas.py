@@ -128,11 +128,14 @@ class LocalVideoGenerationStatus(BaseModel):
     downloaded: bool
     hf_repo_id: str
     diffusers_hf_repo_id: str
+    text_encoder_hf_repo_id: str
     transformer_filename: str | None = None
+    text_encoder_filename: str | None = None
     high_noise_filename: str | None = None
     low_noise_filename: str | None = None
     vae_filename: str | None = None
     transformer_path: str | None = None
+    text_encoder_path: str | None = None
     high_noise_path: str | None = None
     low_noise_path: str | None = None
     vae_path: str | None = None
@@ -209,7 +212,9 @@ class DownloadVideoGenerationRequest(BaseModel):
     architecture: str | None = None
     hf_repo_id: str | None = None
     diffusers_hf_repo_id: str | None = None
+    text_encoder_hf_repo_id: str | None = None
     transformer_filename: str | None = None
+    text_encoder_filename: str | None = None
     high_noise_filename: str | None = None
     low_noise_filename: str | None = None
     vae_filename: str | None = None
@@ -523,7 +528,9 @@ class SettingsPatch(BaseModel):
     video_generation_architecture: str | None = None
     video_generation_hf_repo_id: str | None = None
     video_generation_diffusers_hf_repo_id: str | None = None
+    video_generation_text_encoder_hf_repo_id: str | None = None
     video_generation_transformer_filename: str | None = None
+    video_generation_text_encoder_filename: str | None = None
     video_generation_high_noise_filename: str | None = None
     video_generation_low_noise_filename: str | None = None
     video_generation_vae_filename: str | None = None

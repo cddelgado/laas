@@ -490,7 +490,9 @@ def create_app(
             architecture=request.architecture,
             hf_repo_id=request.hf_repo_id,
             diffusers_hf_repo_id=request.diffusers_hf_repo_id,
+            text_encoder_hf_repo_id=request.text_encoder_hf_repo_id,
             transformer_filename=request.transformer_filename,
+            text_encoder_filename=request.text_encoder_filename,
             high_noise_filename=request.high_noise_filename,
             low_noise_filename=request.low_noise_filename,
             vae_filename=request.vae_filename,
@@ -503,6 +505,11 @@ def create_app(
                 "transformer": (
                     str(active_settings.video_generation_transformer_path)
                     if active_settings.video_generation_transformer_filename
+                    else None
+                ),
+                "text_encoder": (
+                    str(active_settings.video_generation_text_encoder_path)
+                    if active_settings.video_generation_text_encoder_filename
                     else None
                 ),
                 "high_noise": (
@@ -528,7 +535,9 @@ def create_app(
                     architecture=request.architecture,
                     hf_repo_id=request.hf_repo_id,
                     diffusers_hf_repo_id=request.diffusers_hf_repo_id,
+                    text_encoder_hf_repo_id=request.text_encoder_hf_repo_id,
                     transformer_filename=request.transformer_filename,
+                    text_encoder_filename=request.text_encoder_filename,
                     high_noise_filename=request.high_noise_filename,
                     low_noise_filename=request.low_noise_filename,
                     vae_filename=request.vae_filename,

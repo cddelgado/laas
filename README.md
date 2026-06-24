@@ -627,10 +627,11 @@ exclusive loading.
 `POST /v1/videos/generations` is implemented as a local image-to-video API
 surface for the configured `wan2.2-ti2v-5b-turbo-q3_k_m` model. The native
 runner uses Diffusers' Wan pipeline with a single Q3_K_M GGUF transformer from
-`hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF`, plus the tokenizer, text encoder,
-scheduler, VAE, and component configs from `Wan-AI/Wan2.2-TI2V-5B-Diffusers`.
-LAAS downloads the one required GGUF file and the required Diffusers-side
-components, not the full transformer safetensor shards from the base repo.
+`hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF`, a quantized UMT5 encoder GGUF from
+`city96/umt5-xxl-encoder-gguf`, plus tokenizer, scheduler, VAE, and component
+configs from `Wan-AI/Wan2.2-TI2V-5B-Diffusers`. LAAS downloads the required GGUF
+files and the required small Diffusers-side components, not the full transformer
+or text-encoder safetensor shards from the base repo.
 
 The endpoint accepts multipart form data with `prompt`, `image`, and optional
 `size`, `seconds`, `fps`, `num_inference_steps`, `guidance_scale`, `seed`, and
