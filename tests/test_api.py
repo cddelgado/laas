@@ -27,6 +27,8 @@ from laas.image import (
     ImageEditBackend,
     ImageEditManager,
     ImageManager,
+    image_edit_snapshot_allow_patterns,
+    image_generation_snapshot_allow_patterns,
 )
 from laas.main import build_parser, confirm_missing_model_downloads, missing_configured_model_paths
 from laas.main import main as laas_main
@@ -1443,8 +1445,11 @@ def test_image_generation_missing_model_requires_download(tmp_path: Path) -> Non
 
 def test_image_generation_auto_downloads_for_openai_client_path(tmp_path: Path, monkeypatch) -> None:
     client, backend = make_image_client(tmp_path, write_model=False, auto_download=True)
+    captured_allow_patterns: list[str] | None = None
 
     def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        nonlocal captured_allow_patterns
+        captured_allow_patterns = kwargs.get("allow_patterns")
         path = Path(local_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "model_index.json").write_text("{}", encoding="utf-8")
@@ -1461,6 +1466,10 @@ def test_image_generation_auto_downloads_for_openai_client_path(tmp_path: Path, 
     assert status["download_in_progress"] is False
     assert status["download_started_at"] is not None
     assert status["download_finished_at"] is not None
+    assert captured_allow_patterns is not None
+    assert captured_allow_patterns == image_generation_snapshot_allow_patterns(Settings(model_dir=tmp_path))
+    assert "sd_xl_turbo_1.0_fp16.safetensors" not in captured_allow_patterns
+    assert "unet/diffusion_pytorch_model.fp16.safetensors" in captured_allow_patterns
 
 
 def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> None:
@@ -1723,8 +1732,11 @@ def test_image_status_does_not_block_when_manager_is_busy(tmp_path: Path) -> Non
 
 def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
     client, _backend = make_image_client(tmp_path, write_model=False)
+    captured_allow_patterns: list[str] | None = None
 
     def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        nonlocal captured_allow_patterns
+        captured_allow_patterns = kwargs.get("allow_patterns")
         path = Path(local_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "model_index.json").write_text("{}", encoding="utf-8")
@@ -1736,6 +1748,8 @@ def test_image_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -
     assert response.status_code == 200
     assert response.json()["downloaded"] is True
     assert response.json()["model_id"] == "sdxl-turbo"
+    assert captured_allow_patterns is not None
+    assert captured_allow_patterns == image_generation_snapshot_allow_patterns(Settings(model_dir=tmp_path))
 
 
 def test_image_edit_status_load_edit_and_unload(tmp_path: Path, monkeypatch) -> None:
@@ -2027,8 +2041,11 @@ def test_image_edit_missing_model_requires_download(tmp_path: Path, monkeypatch)
 
 def test_image_edit_auto_downloads_for_openai_client_path(tmp_path: Path, monkeypatch) -> None:
     client, backend = make_image_edit_client(tmp_path, write_model=False, auto_download=True)
+    captured_allow_patterns: list[str] | None = None
 
     def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        nonlocal captured_allow_patterns
+        captured_allow_patterns = kwargs.get("allow_patterns")
         path = Path(local_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "model_index.json").write_text("{}", encoding="utf-8")
@@ -2053,12 +2070,20 @@ def test_image_edit_auto_downloads_for_openai_client_path(tmp_path: Path, monkey
     assert status["download_in_progress"] is False
     assert status["download_started_at"] is not None
     assert status["download_finished_at"] is not None
+    assert captured_allow_patterns is not None
+    assert captured_allow_patterns == image_edit_snapshot_allow_patterns(Settings(model_dir=tmp_path))
+    assert "safety_checker/model.fp16.safetensors" not in captured_allow_patterns
+    assert "feature_extractor/*" not in captured_allow_patterns
+    assert "unet/diffusion_pytorch_model.fp16.safetensors" in captured_allow_patterns
 
 
 def test_image_edit_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypatch) -> None:
     client, _backend = make_image_edit_client(tmp_path, write_model=False)
+    captured_allow_patterns: list[str] | None = None
 
     def fake_snapshot_download(*, repo_id, local_dir, **kwargs):
+        nonlocal captured_allow_patterns
+        captured_allow_patterns = kwargs.get("allow_patterns")
         path = Path(local_dir)
         path.mkdir(parents=True, exist_ok=True)
         (path / "model_index.json").write_text("{}", encoding="utf-8")
@@ -2070,6 +2095,8 @@ def test_image_edit_download_endpoint_fetches_snapshot(tmp_path: Path, monkeypat
     assert response.status_code == 200
     assert response.json()["downloaded"] is True
     assert response.json()["model_id"] == "sd-1.5-inpainting"
+    assert captured_allow_patterns is not None
+    assert captured_allow_patterns == image_edit_snapshot_allow_patterns(Settings(model_dir=tmp_path))
 
 
 def test_tool_call_translation(tmp_path: Path) -> None:

@@ -504,6 +504,12 @@ The status response includes `download_in_progress`, `download_started_at`,
 `output_retention_seconds`. The server console also logs when the Hugging Face
 snapshot download starts, finishes, or fails.
 
+For the default SDXL Turbo repo, LAAS downloads only the Diffusers component
+files it loads and skips standalone checkpoint files. For the default SD 1.5
+inpainting repo, LAAS skips the safety checker and feature extractor because
+the local backend disables the safety checker at load time. Custom image repos
+still fall back to normal Hugging Face snapshots.
+
 Manual download and load endpoints are still available for prewarming or for
 setups that choose `LAAS_IMAGE_AUTO_DOWNLOAD=false`:
 

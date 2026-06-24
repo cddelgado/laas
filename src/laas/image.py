@@ -20,6 +20,45 @@ IMAGE_OUTPUT_MEDIA_TYPES = {
     "jpeg": "image/jpeg",
     "webp": "image/webp",
 }
+SDXL_TURBO_REPO_ID = "stabilityai/sdxl-turbo"
+SD15_INPAINT_REPO_ID = "stable-diffusion-v1-5/stable-diffusion-inpainting"
+
+SDXL_TURBO_COMMON_ALLOW_PATTERNS = [
+    "model_index.json",
+    "scheduler/*",
+    "text_encoder/config.json",
+    "text_encoder_2/config.json",
+    "tokenizer/*",
+    "tokenizer_2/*",
+    "unet/config.json",
+    "vae/config.json",
+]
+SDXL_TURBO_FP16_ALLOW_PATTERNS = [
+    *SDXL_TURBO_COMMON_ALLOW_PATTERNS,
+    "text_encoder/model.fp16.safetensors",
+    "text_encoder_2/model.fp16.safetensors",
+    "unet/diffusion_pytorch_model.fp16.safetensors",
+    "vae/diffusion_pytorch_model.fp16.safetensors",
+]
+SDXL_TURBO_FULL_ALLOW_PATTERNS = [
+    *SDXL_TURBO_COMMON_ALLOW_PATTERNS,
+    "text_encoder/model.safetensors",
+    "text_encoder_2/model.safetensors",
+    "unet/diffusion_pytorch_model.safetensors",
+    "vae/diffusion_pytorch_model.safetensors",
+]
+SD15_INPAINT_FP16_ALLOW_PATTERNS = [
+    "model_index.json",
+    "config.json",
+    "scheduler/*",
+    "text_encoder/config.json",
+    "text_encoder/model.fp16.safetensors",
+    "tokenizer/*",
+    "unet/config.json",
+    "unet/diffusion_pytorch_model.fp16.safetensors",
+    "vae/config.json",
+    "vae/diffusion_pytorch_model.fp16.safetensors",
+]
 
 
 @dataclass
@@ -102,6 +141,24 @@ class ImageBackend:
         raise NotImplementedError
 
 
+def _uses_fp16_variant(dtype_name: str) -> bool:
+    return dtype_name.lower() in {"float16", "fp16"}
+
+
+def image_generation_snapshot_allow_patterns(settings: Settings) -> list[str] | None:
+    if settings.image_hf_repo_id != SDXL_TURBO_REPO_ID:
+        return None
+    if _uses_fp16_variant(settings.image_torch_dtype):
+        return SDXL_TURBO_FP16_ALLOW_PATTERNS
+    return SDXL_TURBO_FULL_ALLOW_PATTERNS
+
+
+def image_edit_snapshot_allow_patterns(settings: Settings) -> list[str] | None:
+    if settings.image_edit_hf_repo_id != SD15_INPAINT_REPO_ID:
+        return None
+    return SD15_INPAINT_FP16_ALLOW_PATTERNS
+
+
 class DiffusersImageBackend(ImageBackend):
     def __init__(self, *, model_path: Path, settings: Settings) -> None:
         try:
@@ -115,8 +172,12 @@ class DiffusersImageBackend(ImageBackend):
         dtype = _torch_dtype(torch, settings.image_torch_dtype)
         self._torch_dtype = dtype
         self._device = _resolve_device(torch, settings.image_device)
-        self._load_kwargs = {"torch_dtype": dtype}
-        if settings.image_torch_dtype.lower() in {"float16", "fp16"}:
+        self._load_kwargs = {
+            "torch_dtype": dtype,
+            "use_safetensors": True,
+            "low_cpu_mem_usage": True,
+        }
+        if _uses_fp16_variant(settings.image_torch_dtype):
             self._load_kwargs["variant"] = "fp16"
         self._pipe = AutoPipelineForText2Image.from_pretrained(str(model_path), **self._load_kwargs)
         self._image_to_image_pipe = None
@@ -252,8 +313,15 @@ class DiffusersImageEditBackend(ImageEditBackend):
         self.settings = settings
         dtype = _torch_dtype(torch, settings.image_torch_dtype)
         self._device = _resolve_device(torch, settings.image_device)
-        load_kwargs = {"torch_dtype": dtype}
-        if settings.image_torch_dtype.lower() in {"float16", "fp16"}:
+        load_kwargs = {
+            "torch_dtype": dtype,
+            "use_safetensors": True,
+            "low_cpu_mem_usage": True,
+            "safety_checker": None,
+            "feature_extractor": None,
+            "requires_safety_checker": False,
+        }
+        if _uses_fp16_variant(settings.image_torch_dtype):
             load_kwargs["variant"] = "fp16"
         self._pipe = AutoPipelineForInpainting.from_pretrained(str(model_path), **load_kwargs)
         if self._device == "cuda":
@@ -379,11 +447,17 @@ class ImageManager:
                 self._download_finished_at = None
                 self._last_download_error = None
             print(
-                f"Downloading image model snapshot {self.settings.image_hf_repo_id} to {local_dir}...",
+                f"Downloading image model assets {self.settings.image_hf_repo_id} to {local_dir}...",
                 flush=True,
             )
             try:
-                downloaded = snapshot_download(repo_id=self.settings.image_hf_repo_id, local_dir=local_dir)
+                allow_patterns = image_generation_snapshot_allow_patterns(self.settings)
+                download_kwargs = {"allow_patterns": allow_patterns} if allow_patterns else {}
+                downloaded = snapshot_download(
+                    repo_id=self.settings.image_hf_repo_id,
+                    local_dir=local_dir,
+                    **download_kwargs,
+                )
             except Exception as exc:
                 with self._lock:
                     self._download_in_progress = False
@@ -394,7 +468,7 @@ class ImageManager:
             with self._lock:
                 self._download_in_progress = False
                 self._download_finished_at = time.time()
-            print(f"Image model snapshot ready at {downloaded}", flush=True)
+            print(f"Image model assets ready at {downloaded}", flush=True)
             return Path(downloaded)
 
     def load(
@@ -632,28 +706,16 @@ class ImageEditManager:
                 self._download_finished_at = None
                 self._last_download_error = None
             print(
-                f"Downloading image edit model snapshot {self.settings.image_edit_hf_repo_id} to {local_dir}...",
+                f"Downloading image edit model assets {self.settings.image_edit_hf_repo_id} to {local_dir}...",
                 flush=True,
             )
             try:
+                allow_patterns = image_edit_snapshot_allow_patterns(self.settings)
+                download_kwargs = {"allow_patterns": allow_patterns} if allow_patterns else {}
                 downloaded = snapshot_download(
                     repo_id=self.settings.image_edit_hf_repo_id,
                     local_dir=local_dir,
-                    allow_patterns=[
-                        "model_index.json",
-                        "config.json",
-                        "feature_extractor/*",
-                        "scheduler/*",
-                        "safety_checker/config.json",
-                        "safety_checker/model.fp16.safetensors",
-                        "text_encoder/config.json",
-                        "text_encoder/model.fp16.safetensors",
-                        "tokenizer/*",
-                        "unet/config.json",
-                        "unet/diffusion_pytorch_model.fp16.safetensors",
-                        "vae/config.json",
-                        "vae/diffusion_pytorch_model.fp16.safetensors",
-                    ],
+                    **download_kwargs,
                 )
             except Exception as exc:
                 with self._lock:
@@ -665,7 +727,7 @@ class ImageEditManager:
             with self._lock:
                 self._download_in_progress = False
                 self._download_finished_at = time.time()
-            print(f"Image edit model snapshot ready at {downloaded}", flush=True)
+            print(f"Image edit model assets ready at {downloaded}", flush=True)
             return Path(downloaded)
 
     def load(

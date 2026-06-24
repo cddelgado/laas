@@ -417,11 +417,18 @@ LAAS_IMAGE_EDIT_COMPOSITE_BLUR_RADIUS=4
 LAAS_IMAGE_EDIT_AUTO_DOWNLOAD=true
 ```
 
-The image snapshots use the same `LAAS_MODEL_DIR` root as the GGUF model. The
-backend downloads Diffusers snapshot directories rather than single model
-files. By default, the OpenAI-compatible `POST /v1/images/generations` and
-`POST /v1/images/edits` endpoints download their configured snapshots on first
-use, load them, and then return images.
+The image assets use the same `LAAS_MODEL_DIR` root as the GGUF model. For the
+default SDXL Turbo repo, LAAS downloads only the Diffusers component files it
+loads and skips standalone checkpoint files such as
+`sd_xl_turbo_1.0_fp16.safetensors`. For the default SD 1.5 inpainting repo,
+LAAS downloads only the scheduler, tokenizer, text encoder, UNet, and VAE files;
+the local backend disables the safety checker, so safety checker and feature
+extractor files are skipped. Custom image repos fall back to normal Hugging Face
+snapshots unless they are one of these known defaults.
+
+By default, the OpenAI-compatible `POST /v1/images/generations` and
+`POST /v1/images/edits` endpoints download their configured assets on first use,
+load them, and then return images.
 Use `GET /v1/local/images/status` from another terminal to inspect
 `download_in_progress`, `download_started_at`, `download_finished_at`, and
 `last_download_error` while the first request is running.
