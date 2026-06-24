@@ -122,17 +122,20 @@ class LocalVideoGenerationStatus(BaseModel):
     configured_model: str
     loaded_model: str | None
     is_loaded: bool
+    architecture: str
     model_path: str
     diffusers_model_path: str
     downloaded: bool
     hf_repo_id: str
     diffusers_hf_repo_id: str
-    high_noise_filename: str
-    low_noise_filename: str
-    vae_filename: str
-    high_noise_path: str
-    low_noise_path: str
-    vae_path: str
+    transformer_filename: str | None = None
+    high_noise_filename: str | None = None
+    low_noise_filename: str | None = None
+    vae_filename: str | None = None
+    transformer_path: str | None = None
+    high_noise_path: str | None = None
+    low_noise_path: str | None = None
+    vae_path: str | None = None
     default_size: str
     default_seconds: float
     default_fps: int
@@ -203,8 +206,10 @@ class LoadImageRequest(BaseModel):
 
 class DownloadVideoGenerationRequest(BaseModel):
     model_id: str | None = None
+    architecture: str | None = None
     hf_repo_id: str | None = None
     diffusers_hf_repo_id: str | None = None
+    transformer_filename: str | None = None
     high_noise_filename: str | None = None
     low_noise_filename: str | None = None
     vae_filename: str | None = None
@@ -515,8 +520,10 @@ class SettingsPatch(BaseModel):
     image_edit_auto_download: bool | None = None
     image_edit_idle_unload_seconds: int | None = Field(default=None, ge=0)
     video_generation_model_id: str | None = None
+    video_generation_architecture: str | None = None
     video_generation_hf_repo_id: str | None = None
     video_generation_diffusers_hf_repo_id: str | None = None
+    video_generation_transformer_filename: str | None = None
     video_generation_high_noise_filename: str | None = None
     video_generation_low_noise_filename: str | None = None
     video_generation_vae_filename: str | None = None

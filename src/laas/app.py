@@ -487,8 +487,10 @@ def create_app(
     @app.post("/v1/local/videos/download")
     def download_video_generation_model(request: DownloadVideoGenerationRequest) -> dict[str, Any]:
         path = active_video_manager.download(
+            architecture=request.architecture,
             hf_repo_id=request.hf_repo_id,
             diffusers_hf_repo_id=request.diffusers_hf_repo_id,
+            transformer_filename=request.transformer_filename,
             high_noise_filename=request.high_noise_filename,
             low_noise_filename=request.low_noise_filename,
             vae_filename=request.vae_filename,
@@ -498,9 +500,22 @@ def create_app(
             "path": str(path),
             "downloaded": True,
             "assets": {
-                "high_noise": str(active_settings.video_generation_high_noise_path),
-                "low_noise": str(active_settings.video_generation_low_noise_path),
-                "vae": str(active_settings.video_generation_vae_path),
+                "transformer": (
+                    str(active_settings.video_generation_transformer_path)
+                    if active_settings.video_generation_transformer_filename
+                    else None
+                ),
+                "high_noise": (
+                    str(active_settings.video_generation_high_noise_path)
+                    if active_settings.video_generation_high_noise_filename
+                    else None
+                ),
+                "low_noise": (
+                    str(active_settings.video_generation_low_noise_path)
+                    if active_settings.video_generation_low_noise_filename
+                    else None
+                ),
+                "vae": str(active_settings.video_generation_vae_path) if active_settings.video_generation_vae_filename else None,
             },
         }
 
@@ -510,8 +525,10 @@ def create_app(
             try:
                 return active_video_manager.load(
                     model_id=request.model_id,
+                    architecture=request.architecture,
                     hf_repo_id=request.hf_repo_id,
                     diffusers_hf_repo_id=request.diffusers_hf_repo_id,
+                    transformer_filename=request.transformer_filename,
                     high_noise_filename=request.high_noise_filename,
                     low_noise_filename=request.low_noise_filename,
                     vae_filename=request.vae_filename,

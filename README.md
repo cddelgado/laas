@@ -625,13 +625,12 @@ exclusive loading.
 ## Local Video Generation
 
 `POST /v1/videos/generations` is implemented as a local image-to-video API
-surface for the configured `wan2.2-i2v-q3` model. The native runner uses
-Diffusers' `WanImageToVideoPipeline` with the Q3_K_M HighNoise and LowNoise GGUF
-transformers from `QuantStack/Wan2.2-I2V-A14B-GGUF`, plus the tokenizer, text
-encoder, scheduler, VAE, and component configs from
-`Wan-AI/Wan2.2-I2V-A14B-Diffusers`. LAAS downloads only the required GGUF files
-and the required Diffusers-side components, not the full transformer safetensor
-shards from the base repo.
+surface for the configured `wan2.2-ti2v-5b-turbo-q3_k_m` model. The native
+runner uses Diffusers' Wan pipeline with a single Q3_K_M GGUF transformer from
+`hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF`, plus the tokenizer, text encoder,
+scheduler, VAE, and component configs from `Wan-AI/Wan2.2-TI2V-5B-Diffusers`.
+LAAS downloads the one required GGUF file and the required Diffusers-side
+components, not the full transformer safetensor shards from the base repo.
 
 The endpoint accepts multipart form data with `prompt`, `image`, and optional
 `size`, `seconds`, `fps`, `num_inference_steps`, `guidance_scale`, `seed`, and
@@ -650,7 +649,7 @@ $response = Invoke-RestMethod `
     prompt = "a brass table lamp glowing in a quiet room"
     image = Get-Item .\frame.png
     size = "832x480"
-    seconds = "4"
+    seconds = "2"
     response_format = "b64_json"
   }
 ```
@@ -658,7 +657,9 @@ $response = Invoke-RestMethod `
 Install `requirements-image.txt` first. The native runner requires `diffusers`,
 `transformers`, `torch`, `pillow`, `safetensors`, and `gguf`. On constrained
 GPUs, keep `LAAS_VIDEO_GENERATION_ENABLE_MODEL_CPU_OFFLOAD=true` and start with
-short 832x480 clips.
+short clips. The old A14B I2V dual-expert profile is still configurable, but it
+is no longer the default because it pins too much memory and can thrash 8GB
+systems.
 
 Live smoke against a running server:
 

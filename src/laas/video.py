@@ -74,11 +74,10 @@ WAN_DIFFUSERS_ALLOW_PATTERNS = (
     "text_encoder/*",
     "tokenizer/*",
     "transformer/config.json",
-    "transformer_2/config.json",
     "vae/*",
 )
 
-WAN_DIFFUSERS_REQUIRED_FILES = (
+WAN_DIFFUSERS_BASE_REQUIRED_FILES = (
     "model_index.json",
     "scheduler/scheduler_config.json",
     "text_encoder/config.json",
@@ -86,9 +85,10 @@ WAN_DIFFUSERS_REQUIRED_FILES = (
     "tokenizer/tokenizer.json",
     "tokenizer/tokenizer_config.json",
     "transformer/config.json",
-    "transformer_2/config.json",
     "vae/config.json",
 )
+
+WAN_DUAL_EXPERT_EXTRA_REQUIRED_FILES = ("transformer_2/config.json",)
 
 
 class DiffusersWanVideoBackend(VideoBackend):
@@ -120,8 +120,9 @@ class DiffusersWanVideoBackend(VideoBackend):
         base_path = self.settings.video_generation_diffusers_model_path
         quantization_config = GGUFQuantizationConfig(compute_dtype=dtype)
 
+        architecture = normalized_video_architecture(self.settings)
         transformer = WanTransformer3DModel.from_single_file(
-            str(self.settings.video_generation_high_noise_path),
+            str(video_transformer_path(self.settings, role="transformer")),
             quantization_config=quantization_config,
             config=str(base_path),
             subfolder="transformer",
@@ -129,15 +130,17 @@ class DiffusersWanVideoBackend(VideoBackend):
         )
         if hasattr(transformer, "config"):
             transformer.config.image_dim = None
-        transformer_2 = WanTransformer3DModel.from_single_file(
-            str(self.settings.video_generation_low_noise_path),
-            quantization_config=quantization_config,
-            config=str(base_path),
-            subfolder="transformer_2",
-            torch_dtype=dtype,
-        )
-        if hasattr(transformer_2, "config"):
-            transformer_2.config.image_dim = None
+        transformer_2 = None
+        if architecture == "dual":
+            transformer_2 = WanTransformer3DModel.from_single_file(
+                str(video_transformer_path(self.settings, role="transformer_2")),
+                quantization_config=quantization_config,
+                config=str(base_path),
+                subfolder="transformer_2",
+                torch_dtype=dtype,
+            )
+            if hasattr(transformer_2, "config"):
+                transformer_2.config.image_dim = None
         vae = AutoencoderKLWan.from_pretrained(
             str(base_path),
             subfolder="vae",
@@ -245,6 +248,39 @@ class DiffusersWanVideoBackend(VideoBackend):
         return torch.float32
 
 
+def normalized_video_architecture(settings: Settings) -> str:
+    architecture = settings.video_generation_architecture.lower().strip()
+    if architecture in {"single", "ti2v", "dense"}:
+        return "single"
+    if architecture in {"dual", "moe", "a14b"}:
+        return "dual"
+    raise RuntimeError(f"unsupported video_generation_architecture: {settings.video_generation_architecture}")
+
+
+def video_diffusers_required_files(settings: Settings) -> tuple[str, ...]:
+    files = list(WAN_DIFFUSERS_BASE_REQUIRED_FILES)
+    if normalized_video_architecture(settings) == "dual":
+        files.extend(WAN_DUAL_EXPERT_EXTRA_REQUIRED_FILES)
+    return tuple(files)
+
+
+def video_transformer_path(settings: Settings, *, role: str) -> Path:
+    architecture = normalized_video_architecture(settings)
+    if architecture == "single":
+        if not settings.video_generation_transformer_filename:
+            raise VideoNotDownloadedError(settings.video_generation_model_path, asset="transformer")
+        return settings.video_generation_transformer_path
+    if role == "transformer":
+        if not settings.video_generation_high_noise_filename:
+            raise VideoNotDownloadedError(settings.video_generation_model_path, asset="high_noise")
+        return settings.video_generation_high_noise_path
+    if role == "transformer_2":
+        if not settings.video_generation_low_noise_filename:
+            raise VideoNotDownloadedError(settings.video_generation_model_path, asset="low_noise")
+        return settings.video_generation_low_noise_path
+    raise RuntimeError(f"unsupported transformer role: {role}")
+
+
 class VideoManager:
     def __init__(self, settings: Settings, backend_factory: VideoBackendFactory | None = None) -> None:
         self.settings = settings
@@ -290,17 +326,23 @@ class VideoManager:
     def download(
         self,
         *,
+        architecture: str | None = None,
         hf_repo_id: str | None = None,
         diffusers_hf_repo_id: str | None = None,
+        transformer_filename: str | None = None,
         high_noise_filename: str | None = None,
         low_noise_filename: str | None = None,
         vae_filename: str | None = None,
     ) -> Path:
         with self._download_lock:
+            if architecture:
+                self.settings.video_generation_architecture = architecture
             if hf_repo_id:
                 self.settings.video_generation_hf_repo_id = hf_repo_id
             if diffusers_hf_repo_id:
                 self.settings.video_generation_diffusers_hf_repo_id = diffusers_hf_repo_id
+            if transformer_filename:
+                self.settings.video_generation_transformer_filename = transformer_filename
             if high_noise_filename:
                 self.settings.video_generation_high_noise_filename = high_noise_filename
             if low_noise_filename:
@@ -352,8 +394,10 @@ class VideoManager:
         self,
         *,
         model_id: str | None = None,
+        architecture: str | None = None,
         hf_repo_id: str | None = None,
         diffusers_hf_repo_id: str | None = None,
+        transformer_filename: str | None = None,
         high_noise_filename: str | None = None,
         low_noise_filename: str | None = None,
         vae_filename: str | None = None,
@@ -367,10 +411,14 @@ class VideoManager:
                 return self.status()
 
             self._close_locked()
+            if architecture:
+                self.settings.video_generation_architecture = architecture
             if hf_repo_id:
                 self.settings.video_generation_hf_repo_id = hf_repo_id
             if diffusers_hf_repo_id:
                 self.settings.video_generation_diffusers_hf_repo_id = diffusers_hf_repo_id
+            if transformer_filename:
+                self.settings.video_generation_transformer_filename = transformer_filename
             if high_noise_filename:
                 self.settings.video_generation_high_noise_filename = high_noise_filename
             if low_noise_filename:
@@ -442,33 +490,53 @@ class VideoManager:
     def _is_downloaded(self) -> bool:
         return all(path.exists() for path in self._asset_paths()) and all(
             (self.settings.video_generation_diffusers_model_path / filename).exists()
-            for filename in WAN_DIFFUSERS_REQUIRED_FILES
+            for filename in video_diffusers_required_files(self.settings)
         )
 
-    def _asset_filenames(self) -> tuple[str, str, str]:
-        return (
-            self.settings.video_generation_high_noise_filename,
-            self.settings.video_generation_low_noise_filename,
-            self.settings.video_generation_vae_filename,
-        )
+    def _asset_filenames(self) -> tuple[str, ...]:
+        names = []
+        if normalized_video_architecture(self.settings) == "dual":
+            names.extend(
+                [
+                    self.settings.video_generation_high_noise_filename,
+                    self.settings.video_generation_low_noise_filename,
+                ]
+            )
+        else:
+            names.append(self.settings.video_generation_transformer_filename)
+        if self.settings.video_generation_vae_filename:
+            names.append(self.settings.video_generation_vae_filename)
+        return tuple(name for name in names if name)
 
-    def _asset_paths(self) -> tuple[Path, Path, Path]:
-        return (
-            self.settings.video_generation_high_noise_path,
-            self.settings.video_generation_low_noise_path,
-            self.settings.video_generation_vae_path,
-        )
+    def _asset_paths(self) -> tuple[Path, ...]:
+        paths = []
+        if normalized_video_architecture(self.settings) == "dual":
+            paths.extend(
+                [
+                    self.settings.video_generation_high_noise_path,
+                    self.settings.video_generation_low_noise_path,
+                ]
+            )
+        else:
+            paths.append(self.settings.video_generation_transformer_path)
+        if self.settings.video_generation_vae_filename:
+            paths.append(self.settings.video_generation_vae_path)
+        return tuple(paths)
 
     def _first_missing_asset(self) -> tuple[Path, str]:
-        assets = (
-            (self.settings.video_generation_high_noise_path, "high_noise"),
-            (self.settings.video_generation_low_noise_path, "low_noise"),
-            (self.settings.video_generation_vae_path, "vae"),
-        )
+        if normalized_video_architecture(self.settings) == "dual":
+            assets = [
+                (self.settings.video_generation_high_noise_path, "high_noise"),
+                (self.settings.video_generation_low_noise_path, "low_noise"),
+            ]
+        else:
+            assets = [(self.settings.video_generation_transformer_path, "transformer")]
+        if self.settings.video_generation_vae_filename:
+            assets.append((self.settings.video_generation_vae_path, "vae"))
         for path, name in assets:
             if not path.exists():
                 return path, name
-        for filename in WAN_DIFFUSERS_REQUIRED_FILES:
+        for filename in video_diffusers_required_files(self.settings):
             path = self.settings.video_generation_diffusers_model_path / filename
             if not path.exists():
                 return path, "diffusers_base"
@@ -479,17 +547,32 @@ class VideoManager:
             configured_model=self.settings.video_generation_model_id,
             loaded_model=self._loaded_model,
             is_loaded=self._backend is not None,
+            architecture=normalized_video_architecture(self.settings),
             model_path=str(self.settings.video_generation_model_path),
             diffusers_model_path=str(self.settings.video_generation_diffusers_model_path),
             downloaded=downloaded,
             hf_repo_id=self.settings.video_generation_hf_repo_id,
             diffusers_hf_repo_id=self.settings.video_generation_diffusers_hf_repo_id,
+            transformer_filename=self.settings.video_generation_transformer_filename,
             high_noise_filename=self.settings.video_generation_high_noise_filename,
             low_noise_filename=self.settings.video_generation_low_noise_filename,
             vae_filename=self.settings.video_generation_vae_filename,
-            high_noise_path=str(self.settings.video_generation_high_noise_path),
-            low_noise_path=str(self.settings.video_generation_low_noise_path),
-            vae_path=str(self.settings.video_generation_vae_path),
+            transformer_path=(
+                str(self.settings.video_generation_transformer_path)
+                if self.settings.video_generation_transformer_filename
+                else None
+            ),
+            high_noise_path=(
+                str(self.settings.video_generation_high_noise_path)
+                if self.settings.video_generation_high_noise_filename
+                else None
+            ),
+            low_noise_path=(
+                str(self.settings.video_generation_low_noise_path)
+                if self.settings.video_generation_low_noise_filename
+                else None
+            ),
+            vae_path=str(self.settings.video_generation_vae_path) if self.settings.video_generation_vae_filename else None,
             default_size=self.settings.video_generation_default_size,
             default_seconds=self.settings.video_generation_default_seconds,
             default_fps=self.settings.video_generation_default_fps,

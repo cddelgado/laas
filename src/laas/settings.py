@@ -128,16 +128,18 @@ class Settings(BaseSettings):
     image_edit_auto_load: bool = False
     image_edit_auto_download: bool = True
     image_edit_idle_unload_seconds: int = 900
-    video_generation_model_id: str = "wan2.2-i2v-q3"
-    video_generation_hf_repo_id: str = "QuantStack/Wan2.2-I2V-A14B-GGUF"
-    video_generation_diffusers_hf_repo_id: str = "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
-    video_generation_high_noise_filename: str = "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf"
-    video_generation_low_noise_filename: str = "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf"
-    video_generation_vae_filename: str = "VAE/Wan2.1_VAE.safetensors"
+    video_generation_model_id: str = "wan2.2-ti2v-5b-turbo-q3_k_m"
+    video_generation_architecture: str = "single"
+    video_generation_hf_repo_id: str = "hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF"
+    video_generation_diffusers_hf_repo_id: str = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    video_generation_transformer_filename: str | None = "Wan2_2-TI2V-5B-Turbo-Q3_K_M.gguf"
+    video_generation_high_noise_filename: str | None = None
+    video_generation_low_noise_filename: str | None = None
+    video_generation_vae_filename: str | None = None
     video_generation_default_size: str = "832x480"
-    video_generation_default_seconds: float = 4.0
+    video_generation_default_seconds: float = 2.0
     video_generation_default_fps: int = 16
-    video_generation_num_inference_steps: int = 8
+    video_generation_num_inference_steps: int = 4
     video_generation_guidance_scale: float = 1.0
     video_generation_guidance_scale_2: float | None = None
     video_generation_boundary_ratio: float = 0.9
@@ -155,6 +157,10 @@ class Settings(BaseSettings):
     @field_validator(
         "image_output_dir",
         "video_generation_output_dir",
+        "video_generation_transformer_filename",
+        "video_generation_high_noise_filename",
+        "video_generation_low_noise_filename",
+        "video_generation_vae_filename",
         "mmproj_filename",
         "mmproj_repo_id",
         "mtp_filename",
@@ -236,15 +242,27 @@ class Settings(BaseSettings):
 
     @property
     def video_generation_high_noise_path(self) -> Path:
+        if not self.video_generation_high_noise_filename:
+            return self.video_generation_model_path / ""
         return self.video_generation_model_path / self.video_generation_high_noise_filename
 
     @property
     def video_generation_low_noise_path(self) -> Path:
+        if not self.video_generation_low_noise_filename:
+            return self.video_generation_model_path / ""
         return self.video_generation_model_path / self.video_generation_low_noise_filename
 
     @property
     def video_generation_vae_path(self) -> Path:
+        if not self.video_generation_vae_filename:
+            return self.video_generation_model_path / ""
         return self.video_generation_model_path / self.video_generation_vae_filename
+
+    @property
+    def video_generation_transformer_path(self) -> Path:
+        if not self.video_generation_transformer_filename:
+            return self.video_generation_model_path / ""
+        return self.video_generation_model_path / self.video_generation_transformer_filename
 
     @property
     def resolved_image_output_dir(self) -> Path:
@@ -356,8 +374,10 @@ class Settings(BaseSettings):
             "image_edit_auto_download": self.image_edit_auto_download,
             "image_edit_idle_unload_seconds": self.image_edit_idle_unload_seconds,
             "video_generation_model_id": self.video_generation_model_id,
+            "video_generation_architecture": self.video_generation_architecture,
             "video_generation_hf_repo_id": self.video_generation_hf_repo_id,
             "video_generation_diffusers_hf_repo_id": self.video_generation_diffusers_hf_repo_id,
+            "video_generation_transformer_filename": self.video_generation_transformer_filename,
             "video_generation_high_noise_filename": self.video_generation_high_noise_filename,
             "video_generation_low_noise_filename": self.video_generation_low_noise_filename,
             "video_generation_vae_filename": self.video_generation_vae_filename,

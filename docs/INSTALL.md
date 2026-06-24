@@ -504,8 +504,8 @@ exclusive loading.
 ## 6. Optional Local Video Generation
 
 `POST /v1/videos/generations` is the local image-to-video surface. The default
-configured model is `wan2.2-i2v-q3`. The native runner uses Diffusers'
-`WanImageToVideoPipeline` with GGUF transformer components.
+configured model is `wan2.2-ti2v-5b-turbo-q3_k_m`. The native runner uses
+Diffusers with a single GGUF transformer component.
 
 Install the image dependency set before using it:
 
@@ -513,17 +513,15 @@ Install the image dependency set before using it:
 python -m pip install -r requirements-image.txt
 ```
 
-LAAS downloads these GGUF-side assets from `QuantStack/Wan2.2-I2V-A14B-GGUF`:
+LAAS downloads this GGUF-side asset from `hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF`:
 
-- `HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf`
-- `LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf`
-- `VAE/Wan2.1_VAE.safetensors`
+- `Wan2_2-TI2V-5B-Turbo-Q3_K_M.gguf`
 
 It also downloads required non-transformer components from
-`Wan-AI/Wan2.2-I2V-A14B-Diffusers`: `model_index.json`, scheduler, tokenizer,
+`Wan-AI/Wan2.2-TI2V-5B-Diffusers`: `model_index.json`, scheduler, tokenizer,
 text encoder, VAE, and transformer config files. The full transformer
 safetensor shards from the Diffusers repo are not downloaded because the Q3 GGUF
-files provide those weights.
+file provides those weights.
 
 Manual download:
 
@@ -542,7 +540,7 @@ $response = Invoke-RestMethod `
     prompt = "a brass table lamp glowing in a quiet room"
     image = Get-Item .\frame.png
     size = "832x480"
-    seconds = "4"
+    seconds = "2"
     response_format = "b64_json"
   }
 ```
@@ -567,6 +565,11 @@ For constrained GPUs, keep
 files, and start with short 832x480 clips. The runner maps `seconds` and `fps`
 to Wan's `4n+1` frame cadence, so 4 seconds at 16 fps generates 65 frames and
 5 seconds at 16 fps generates 81 frames.
+
+The previous `wan2.2-i2v-q3` A14B dual-expert profile remains configurable with
+`video_generation_architecture=dual`, `video_generation_high_noise_filename`,
+and `video_generation_low_noise_filename`, but it is not the default because it
+uses two 7GB+ GGUF transformer files and is prone to 8GB VRAM/offload thrashing.
 
 Use `POST /v1/local/unload/all` to unload the text model, voice stack, STT model,
 image pipelines, and video generation model in one request.

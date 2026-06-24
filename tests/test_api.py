@@ -440,12 +440,8 @@ def make_video_client(
     if settings.mmproj_path:
         settings.mmproj_path.write_bytes(b"mmproj")
     if write_model:
-        settings.video_generation_high_noise_path.parent.mkdir(parents=True, exist_ok=True)
-        settings.video_generation_low_noise_path.parent.mkdir(parents=True, exist_ok=True)
-        settings.video_generation_vae_path.parent.mkdir(parents=True, exist_ok=True)
-        settings.video_generation_high_noise_path.write_bytes(b"high")
-        settings.video_generation_low_noise_path.write_bytes(b"low")
-        settings.video_generation_vae_path.write_bytes(b"vae")
+        settings.video_generation_transformer_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.video_generation_transformer_path.write_bytes(b"transformer")
         for filename in (
             "model_index.json",
             "scheduler/scheduler_config.json",
@@ -454,7 +450,6 @@ def make_video_client(
             "tokenizer/tokenizer.json",
             "tokenizer/tokenizer_config.json",
             "transformer/config.json",
-            "transformer_2/config.json",
             "vae/config.json",
         ):
             path = settings.video_generation_diffusers_model_path / filename
@@ -1463,14 +1458,16 @@ def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     client, backend = make_video_client(tmp_path)
 
     status = client.get("/v1/local/videos/status").json()
-    assert status["configured_model"] == "wan2.2-i2v-q3"
+    assert status["configured_model"] == "wan2.2-ti2v-5b-turbo-q3_k_m"
+    assert status["architecture"] == "single"
     assert status["downloaded"] is True
     assert status["is_loaded"] is False
-    assert status["hf_repo_id"] == "QuantStack/Wan2.2-I2V-A14B-GGUF"
-    assert status["diffusers_hf_repo_id"] == "Wan-AI/Wan2.2-I2V-A14B-Diffusers"
-    assert status["high_noise_filename"] == "HighNoise/Wan2.2-I2V-A14B-HighNoise-Q3_K_M.gguf"
-    assert status["low_noise_filename"] == "LowNoise/Wan2.2-I2V-A14B-LowNoise-Q3_K_M.gguf"
-    assert status["vae_filename"] == "VAE/Wan2.1_VAE.safetensors"
+    assert status["hf_repo_id"] == "hum-ma/Wan2.2-TI2V-5B-Turbo-GGUF"
+    assert status["diffusers_hf_repo_id"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    assert status["transformer_filename"] == "Wan2_2-TI2V-5B-Turbo-Q3_K_M.gguf"
+    assert status["high_noise_filename"] is None
+    assert status["low_noise_filename"] is None
+    assert status["vae_filename"] is None
     assert status["device"] == "auto"
     assert status["torch_dtype"] == "auto"
     assert status["guidance_scale_2"] is None
@@ -1482,7 +1479,7 @@ def test_video_generation_status_load_generate_and_unload(tmp_path: Path) -> Non
     response = client.post(
         "/v1/videos/generations",
         data={
-            "model": "wan2.2-i2v-q3",
+            "model": "wan2.2-ti2v-5b-turbo-q3_k_m",
             "prompt": "a brass table lamp glowing in a quiet room",
             "size": "640x360",
             "response_format": "b64_json",
@@ -1567,7 +1564,7 @@ def test_video_generation_missing_model_requires_download(tmp_path: Path) -> Non
     load_response = client.post("/v1/local/videos/load", json={"download_if_missing": False})
     assert load_response.status_code == 409
     assert load_response.json()["detail"]["error"]["code"] == "video_model_not_downloaded"
-    assert load_response.json()["detail"]["error"]["param"] == "high_noise"
+    assert load_response.json()["detail"]["error"]["param"] == "transformer"
 
     generation_response = client.post(
         "/v1/videos/generations",
@@ -1599,7 +1596,6 @@ def test_video_generation_auto_downloads_configured_assets(tmp_path: Path, monke
             "tokenizer/tokenizer.json",
             "tokenizer/tokenizer_config.json",
             "transformer/config.json",
-            "transformer_2/config.json",
             "vae/config.json",
         ):
             file_path = path / filename
@@ -1883,12 +1879,8 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
     (settings.image_model_path / "model_index.json").write_text("{}", encoding="utf-8")
     settings.image_edit_model_path.mkdir(parents=True, exist_ok=True)
     (settings.image_edit_model_path / "model_index.json").write_text("{}", encoding="utf-8")
-    settings.video_generation_high_noise_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.video_generation_low_noise_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.video_generation_vae_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.video_generation_high_noise_path.write_bytes(b"high")
-    settings.video_generation_low_noise_path.write_bytes(b"low")
-    settings.video_generation_vae_path.write_bytes(b"vae")
+    settings.video_generation_transformer_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.video_generation_transformer_path.write_bytes(b"transformer")
     for filename in (
         "model_index.json",
         "scheduler/scheduler_config.json",
@@ -1897,7 +1889,6 @@ def test_unload_all_local_models_unloads_text_and_image_stacks(tmp_path: Path) -
         "tokenizer/tokenizer.json",
         "tokenizer/tokenizer_config.json",
         "transformer/config.json",
-        "transformer_2/config.json",
         "vae/config.json",
     ):
         path = settings.video_generation_diffusers_model_path / filename
